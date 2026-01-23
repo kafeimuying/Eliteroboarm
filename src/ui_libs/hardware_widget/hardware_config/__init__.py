@@ -1,0 +1,3 @@
+"""
+Hardware-related Qt widgets
+"""

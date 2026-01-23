@@ -1,0 +1,6 @@
+# Data directory structure
+# This file ensures that the data/ directory is tracked in git
+# while allowing individual data files to be version controlled selectively
+
+# Users can store simulation images, test data, and other data files here
+# Specific data files can be added to git when needed

@@ -1,0 +1,3 @@
+"""
+Light control Qt widgets
+"""

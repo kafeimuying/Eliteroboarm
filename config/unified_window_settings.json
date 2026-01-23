@@ -1,0 +1,646 @@
+{
+  "version": "1.0",
+  "last_updated": "2025-12-12T15:29:13.651459",
+  "windows": {
+    "main_window": {
+      "window_class": "MainWindow",
+      "window_title": "视觉算法调试系统 v3.0",
+      "timestamp": "2025-10-10T23:41:06.604833",
+      "visible": true,
+      "is_maximized": false,
+      "is_fullscreen": false,
+      "size": {
+        "width": 1600,
+        "height": 900
+      },
+      "position": {
+        "x": 100,
+        "y": 100
+      },
+      "screen_number": 0,
+      "geometry": "746573745f67656f6d657472795f6d61696e5f77696e646f77",
+      "state": "746573745f73746174655f6d61696e5f77696e646f77",
+      "additional_data": {
+        "main_splitter_state": "746573745f73706c69747465725f6d61696e5f77696e646f77",
+        "current_tab_index": 0
+      }
+    },
+    "test_window": {
+      "window_class": "TestWindow",
+      "window_title": "VisionPro算法链完整测试",
+      "timestamp": "2025-10-14T10:49:07.815116",
+      "visible": true,
+      "is_maximized": false,
+      "is_fullscreen": false,
+      "size": {
+        "width": 600,
+        "height": 400
+      },
+      "position": {
+        "x": 98,
+        "y": 70
+      },
+      "screen_number": "",
+      "geometry": "01d9d0cb000300000000006200000046000002b9000001f10000006200000062000002b9000001f1000000000000000005a00000006200000062000002b9000001f1",
+      "state": "000000ff00000000fd00000000000002580000019000000004000000040000000800000008fc00000000",
+      "screen_geometry": {
+        "width": 1440,
+        "height": 900
+      }
+    },
+    "larminar_vision_algorithm_chain_dialog": {
+      "window_class": "LarminarVisionAlgorithmChainDialog",
+      "window_title": "算法链调试 - LaminarVision风格",
+      "timestamp": "2025-12-12T15:29:11.513499",
+      "visible": true,
+      "is_maximized": false,
+      "is_fullscreen": false,
+      "size": {
+        "width": 1998,
+        "height": 1258
+      },
+      "position": {
+        "x": 67,
+        "y": 346
+      },
+      "screen_number": "26990",
+      "geometry": "01d9d0cb00030000000000430000015a0000081000000643000000430000015a000008100000064300000000000000000a00000000430000015a0000081000000643",
+      "state": "746573745f73746174655f6c61726d696e61725f766973696f6e5f616c676f726974686d5f636861696e5f6469616c6f67",
+      "additional_data": {
+        "main_splitter_state": "000000ff00000001000000030000015e000003440000012c01ffffffff010000000100"
+      },
+      "screen_geometry": {
+        "width": 2560,
+        "height": 1440
+      }
+    },
+    "recursive_debug_4869908368": {
+      "window_class": "RecursiveCombinedAlgorithmDebugDialog",
+      "window_title": "com02-config调试",
+      "timestamp": "2025-10-20T14:19:43.446784",
+      "visible": true,
+      "geometry": "01d9d0cb00030000000000000000001f0000059f000003470000012c0000012c000006a3000004af000000000200000005a0000000000000003b0000059f00000347",
+      "is_maximized": true,
+      "is_fullscreen": false,
+      "screen_number": "",
+      "screen_geometry": {
+        "width": 1440,
+        "height": 900
+      },
+      "size": {
+        "width": 1440,
+        "height": 781
+      },
+      "position": {
+        "x": 0,
+        "y": 31
+      }
+    },
+    "recursive_debug_6026652176": {
+      "window_class": "RecursiveCombinedAlgorithmDebugDialog",
+      "window_title": "com02-config调试",
+      "timestamp": "2025-10-20T14:43:21.718167",
+      "visible": true,
+      "geometry": "01d9d0cb00030000000000000000001f0000068f000003dd0000012c0000012c000006a3000004af00000000020000000690000000000000003b0000068f000003dd",
+      "is_maximized": true,
+      "is_fullscreen": false,
+      "screen_number": "",
+      "screen_geometry": {
+        "width": 1680,
+        "height": 1050
+      },
+      "size": {
+        "width": 1680,
+        "height": 931
+      },
+      "position": {
+        "x": 0,
+        "y": 31
+      }
+    },
+    "recursive_debug_5951461584": {
+      "window_class": "RecursiveCombinedAlgorithmDebugDialog",
+      "window_title": "com02-config调试",
+      "timestamp": "2025-10-21T10:41:53.433754",
+      "visible": true,
+      "geometry": "01d9d0cb00030000000000000000001f0000059f000003470000012c0000012c000006a3000004af000000000200000005a0000000000000003b0000059f00000347",
+      "is_maximized": true,
+      "is_fullscreen": false,
+      "screen_number": "",
+      "screen_geometry": {
+        "width": 1440,
+        "height": 900
+      },
+      "size": {
+        "width": 1440,
+        "height": 781
+      },
+      "position": {
+        "x": 0,
+        "y": 31
+      }
+    },
+    "recursive_debug_5018411792": {
+      "window_class": "RecursiveCombinedAlgorithmDebugDialog",
+      "window_title": "comb1020调试",
+      "timestamp": "2025-10-21T11:40:44.949750",
+      "visible": true,
+      "geometry": "01d9d0cb00030000000000000000001f0000059f0000034700000027000000380000059e00000346000000000200000005a0000000000000003b0000059f00000347",
+      "is_maximized": true,
+      "is_fullscreen": false,
+      "screen_number": "",
+      "screen_geometry": {
+        "width": 1440,
+        "height": 900
+      },
+      "size": {
+        "width": 1440,
+        "height": 781
+      },
+      "position": {
+        "x": 0,
+        "y": 31
+      }
+    },
+    "recursive_debug_6071381776": {
+      "window_class": "RecursiveCombinedAlgorithmDebugDialog",
+      "window_title": "comb1020调试",
+      "timestamp": "2025-10-21T11:41:25.499966",
+      "visible": true,
+      "geometry": "01d9d0cb00030000000000000000001f0000059f0000034700000027000000380000059e00000346000000000200000005a0000000000000003b0000059f00000347",
+      "is_maximized": true,
+      "is_fullscreen": false,
+      "screen_number": "",
+      "screen_geometry": {
+        "width": 1440,
+        "height": 900
+      },
+      "size": {
+        "width": 1440,
+        "height": 781
+      },
+      "position": {
+        "x": 0,
+        "y": 31
+      }
+    },
+    "recursive_debug_5440754512": {
+      "window_class": "RecursiveCombinedAlgorithmDebugDialog",
+      "window_title": "形态学操作链调试",
+      "timestamp": "2025-10-21T12:02:44.078588",
+      "visible": true,
+      "geometry": "01d9d0cb00030000000000000000001f0000059f0000038300000027000000380000059e00000382000000000200000005a0000000000000003b0000059f00000383",
+      "is_maximized": true,
+      "is_fullscreen": false,
+      "screen_number": "",
+      "screen_geometry": {
+        "width": 1440,
+        "height": 900
+      },
+      "size": {
+        "width": 1440,
+        "height": 841
+      },
+      "position": {
+        "x": 0,
+        "y": 31
+      }
+    },
+    "recursive_debug_6015667920": {
+      "window_class": "RecursiveCombinedAlgorithmDebugDialog",
+      "window_title": "com02-config调试",
+      "timestamp": "2025-10-21T13:38:02.149563",
+      "visible": true,
+      "geometry": "01d9d0cb00030000fffffee2fffffb8900000481fffffeb1fffffee2fffffba500000481fffffeb100000001000000000a00fffffee2fffffba500000481fffffeb1",
+      "is_maximized": false,
+      "is_fullscreen": false,
+      "screen_number": "",
+      "screen_geometry": {
+        "width": 2560,
+        "height": 1440
+      },
+      "size": {
+        "width": 1440,
+        "height": 781
+      },
+      "position": {
+        "x": -286,
+        "y": -1143
+      }
+    },
+    "recursive_debug_5351756176": {
+      "window_class": "RecursiveCombinedAlgorithmDebugDialog",
+      "window_title": "高斯模糊链调试",
+      "timestamp": "2025-10-22T13:45:41.351532",
+      "visible": true,
+      "geometry": "01d9d0cb00030000000000000000001f0000059f000003830000012c0000012c000006a3000004af000000000200000005a0000000000000003b0000059f00000383",
+      "is_maximized": true,
+      "is_fullscreen": false,
+      "screen_number": "",
+      "screen_geometry": {
+        "width": 1440,
+        "height": 900
+      },
+      "size": {
+        "width": 1440,
+        "height": 841
+      },
+      "position": {
+        "x": 0,
+        "y": 31
+      }
+    },
+    "recursive_debug_5477006864": {
+      "window_class": "RecursiveCombinedAlgorithmDebugDialog",
+      "window_title": "comb01调试",
+      "timestamp": "2025-10-22T14:00:45.435552",
+      "visible": true,
+      "geometry": "01d9d0cb00030000000000000000001f0000059f000003830000012c0000012c000006a3000004af000000000200000005a0000000000000003b0000059f00000383",
+      "is_maximized": true,
+      "is_fullscreen": false,
+      "screen_number": "",
+      "screen_geometry": {
+        "width": 1440,
+        "height": 900
+      },
+      "size": {
+        "width": 1440,
+        "height": 841
+      },
+      "position": {
+        "x": 0,
+        "y": 31
+      }
+    },
+    "recursive_debug_4790770256": {
+      "window_class": "RecursiveCombinedAlgorithmDebugDialog",
+      "window_title": "高斯模糊链调试",
+      "timestamp": "2025-10-24T10:22:26.523756",
+      "visible": true,
+      "geometry": "01d9d0cb00030000000000000000001f0000059f0000038300000027000000380000059e00000382000000000200000005a0000000000000003b0000059f00000383",
+      "is_maximized": true,
+      "is_fullscreen": false,
+      "screen_number": "",
+      "screen_geometry": {
+        "width": 1440,
+        "height": 900
+      },
+      "size": {
+        "width": 1440,
+        "height": 841
+      },
+      "position": {
+        "x": 0,
+        "y": 31
+      }
+    },
+    "recursive_debug_4790950032": {
+      "window_class": "RecursiveCombinedAlgorithmDebugDialog",
+      "window_title": "高斯模糊链调试",
+      "timestamp": "2025-10-24T10:26:00.212330",
+      "visible": true,
+      "geometry": "01d9d0cb00030000000000000000001f0000059f000003830000012c0000012c000006a3000004af000000000200000005a0000000000000003b0000059f00000383",
+      "is_maximized": true,
+      "is_fullscreen": false,
+      "screen_number": "",
+      "screen_geometry": {
+        "width": 1440,
+        "height": 900
+      },
+      "size": {
+        "width": 1440,
+        "height": 841
+      },
+      "position": {
+        "x": 0,
+        "y": 31
+      }
+    },
+    "recursive_debug_4791069136": {
+      "window_class": "RecursiveCombinedAlgorithmDebugDialog",
+      "window_title": "高斯模糊链调试",
+      "timestamp": "2025-10-24T10:27:07.059658",
+      "visible": true,
+      "geometry": "01d9d0cb00030000000000000000001f0000059f000003830000012c0000012c000006a3000004af000000000200000005a0000000000000003b0000059f00000383",
+      "is_maximized": true,
+      "is_fullscreen": false,
+      "screen_number": "",
+      "screen_geometry": {
+        "width": 1440,
+        "height": 900
+      },
+      "size": {
+        "width": 1440,
+        "height": 841
+      },
+      "position": {
+        "x": 0,
+        "y": 31
+      }
+    },
+    "modern_canvas_dialog": {
+      "window_class": "ModernCanvasDialog",
+      "window_title": "现代化算法链编辑器 *",
+      "timestamp": "2025-10-28T12:37:46.480089",
+      "visible": true,
+      "geometry": "01d9d0cb00030000000000f80000010d000007bf0000051f000000f80000010d000007bf0000051f00000000000000000a00000000f80000010d000007bf0000051f",
+      "is_maximized": false,
+      "is_fullscreen": false,
+      "screen_number": "26990",
+      "screen_geometry": {
+        "width": 2560,
+        "height": 1440
+      },
+      "size": {
+        "width": 1736,
+        "height": 1043
+      },
+      "position": {
+        "x": 248,
+        "y": 269
+      }
+    },
+    "recursive_debug_249331277860048": {
+      "window_class": "RecursiveCombinedAlgorithmDebugDialog",
+      "window_title": "阈值分割+ROI区域提取等3个算法组合调试",
+      "timestamp": "2025-10-27T15:02:15.926969",
+      "visible": true,
+      "geometry": "01d9d0cb000300000000000000000020000009ff000005710000012c0000012c000006a3000004af00000000020000000a000000000000000045000009ff00000571",
+      "is_maximized": true,
+      "is_fullscreen": false,
+      "screen_number": "26990",
+      "screen_geometry": {
+        "width": 2560,
+        "height": 1440
+      },
+      "size": {
+        "width": 2560,
+        "height": 1325
+      },
+      "position": {
+        "x": 0,
+        "y": 32
+      }
+    },
+    "recursive_debug_250903856654096": {
+      "window_class": "RecursiveCombinedAlgorithmDebugDialog",
+      "window_title": "抓边cpp调试",
+      "timestamp": "2025-10-27T15:05:42.805988",
+      "visible": true,
+      "geometry": "01d9d0cb000300000000012c00000107000006a3000004af0000012c0000012c000006a3000004af00000000000000000a000000012c0000012c000006a3000004af",
+      "is_maximized": false,
+      "is_fullscreen": false,
+      "screen_number": "26990",
+      "screen_geometry": {
+        "width": 2560,
+        "height": 1440
+      },
+      "size": {
+        "width": 1400,
+        "height": 900
+      },
+      "position": {
+        "x": 300,
+        "y": 263
+      }
+    },
+    "recursive_debug_261519581205840": {
+      "window_class": "RecursiveCombinedAlgorithmDebugDialog",
+      "window_title": "抓边cpp调试",
+      "timestamp": "2025-10-27T15:40:29.949956",
+      "visible": true,
+      "geometry": "01d9d0cb000300000000012c0000012c000006a3000004af0000012c00000151000006a3000004af00000000000000000a000000012c00000151000006a3000004af",
+      "is_maximized": false,
+      "is_fullscreen": false,
+      "screen_number": "26990",
+      "screen_geometry": {
+        "width": 2560,
+        "height": 1440
+      },
+      "size": {
+        "width": 1400,
+        "height": 863
+      },
+      "position": {
+        "x": 300,
+        "y": 300
+      }
+    },
+    "recursive_debug_261519581297616": {
+      "window_class": "RecursiveCombinedAlgorithmDebugDialog",
+      "window_title": "抓边cpp调试",
+      "timestamp": "2025-10-27T15:40:49.653749",
+      "visible": true,
+      "geometry": "01d9d0cb000300000000012c00000107000006a3000004af0000012c0000012c000006a3000004af00000000000000000a000000012c0000012c000006a3000004af",
+      "is_maximized": false,
+      "is_fullscreen": false,
+      "screen_number": "26990",
+      "screen_geometry": {
+        "width": 2560,
+        "height": 1440
+      },
+      "size": {
+        "width": 1400,
+        "height": 900
+      },
+      "position": {
+        "x": 300,
+        "y": 263
+      }
+    },
+    "recursive_debug_256128432251920": {
+      "window_class": "RecursiveCombinedAlgorithmDebugDialog",
+      "window_title": "抓边cpp调试",
+      "timestamp": "2025-10-27T16:59:53.712917",
+      "visible": true,
+      "geometry": "01d9d0cb000300000000012c00000107000006a3000004af0000012c0000012c000006a3000004af00000000000000000a000000012c0000012c000006a3000004af",
+      "is_maximized": false,
+      "is_fullscreen": false,
+      "screen_number": "26990",
+      "screen_geometry": {
+        "width": 2560,
+        "height": 1440
+      },
+      "size": {
+        "width": 1400,
+        "height": 900
+      },
+      "position": {
+        "x": 300,
+        "y": 263
+      }
+    },
+    "recursive_debug_271967597891024": {
+      "window_class": "RecursiveCombinedAlgorithmDebugDialog",
+      "window_title": "抓边cpp调试",
+      "timestamp": "2025-10-28T12:44:22.505417",
+      "visible": true,
+      "geometry": "01d9d0cb000300000000012c00000107000006a3000004af0000012c0000012c000006a3000004af00000000000000000a000000012c0000012c000006a3000004af",
+      "is_maximized": false,
+      "is_fullscreen": false,
+      "screen_number": "26990",
+      "screen_geometry": {
+        "width": 2560,
+        "height": 1440
+      },
+      "size": {
+        "width": 1400,
+        "height": 900
+      },
+      "position": {
+        "x": 300,
+        "y": 263
+      }
+    },
+    "recursive_debug_5099098640": {
+      "window_class": "RecursiveCombinedAlgorithmDebugDialog",
+      "window_title": "抓边cpp调试",
+      "timestamp": "2025-11-03T14:36:22.736686",
+      "visible": true,
+      "geometry": "01d9d0cb00030000000000000000001f0000059f000003470000012c0000012c000006a3000004af000000000200000005a0000000000000003b0000059f00000347",
+      "is_maximized": true,
+      "is_fullscreen": false,
+      "screen_number": "",
+      "screen_geometry": {
+        "width": 1440,
+        "height": 900
+      },
+      "size": {
+        "width": 1440,
+        "height": 781
+      },
+      "position": {
+        "x": 0,
+        "y": 31
+      }
+    },
+    "recursive_debug_5898682896": {
+      "window_class": "RecursiveCombinedAlgorithmDebugDialog",
+      "window_title": "抓边cpp调试",
+      "timestamp": "2025-11-03T15:09:49.453288",
+      "visible": true,
+      "geometry": "01d9d0cb00030000000000000000001f0000059f000003470000012c0000012c000006a3000004af000000000200000005a0000000000000003b0000059f00000347",
+      "is_maximized": true,
+      "is_fullscreen": false,
+      "screen_number": "",
+      "screen_geometry": {
+        "width": 1440,
+        "height": 900
+      },
+      "size": {
+        "width": 1440,
+        "height": 781
+      },
+      "position": {
+        "x": 0,
+        "y": 31
+      }
+    },
+    "recursive_debug_263224656432656": {
+      "window_class": "RecursiveCombinedAlgorithmDebugDialog",
+      "window_title": "抓边cpp调试",
+      "timestamp": "2025-11-04T13:37:27.445605",
+      "visible": true,
+      "geometry": "01d9d0cb000300000000012c00000135000006a3000004dd0000012c0000015a000006a3000004dd00000000000000000a000000012c0000015a000006a3000004dd",
+      "is_maximized": false,
+      "is_fullscreen": false,
+      "screen_number": "26990",
+      "screen_geometry": {
+        "width": 2560,
+        "height": 1440
+      },
+      "size": {
+        "width": 1400,
+        "height": 900
+      },
+      "position": {
+        "x": 300,
+        "y": 309
+      }
+    },
+    "recursive_debug_263224656489296": {
+      "window_class": "RecursiveCombinedAlgorithmDebugDialog",
+      "window_title": "抓边cpp调试",
+      "timestamp": "2025-11-04T13:37:56.896922",
+      "visible": true,
+      "geometry": "01d9d0cb000300000000012c00000135000006a3000004dd0000012c0000015a000006a3000004dd00000000000000000a000000012c0000015a000006a3000004dd",
+      "is_maximized": false,
+      "is_fullscreen": false,
+      "screen_number": "26990",
+      "screen_geometry": {
+        "width": 2560,
+        "height": 1440
+      },
+      "size": {
+        "width": 1400,
+        "height": 900
+      },
+      "position": {
+        "x": 300,
+        "y": 309
+      }
+    },
+    "robot_control_enhanced_dialog": {
+      "window_class": "RobotControlEnhancedDialog",
+      "window_title": "机械臂控制系统 - LarminarVision Enhanced",
+      "timestamp": "2025-11-08T22:53:21.660431",
+      "visible": true,
+      "geometry": "01d9d0cb00030000fffffaf8000000a10000005d0000049ffffffaf9000000d90000005e000004d700000001000400000508fffffaf8000000a10000005d0000049f",
+      "state": "000000ff00000000fd0000000000000566000003ce00000004000000040000000800000008fc000000010000000200000001ffffffff0100000000ffffffff0000000000000000",
+      "is_maximized": false,
+      "is_fullscreen": true,
+      "screen_number": "",
+      "screen_geometry": {
+        "width": 1288,
+        "height": 946
+      },
+      "size": {
+        "width": 1382,
+        "height": 1023
+      },
+      "position": {
+        "x": -1288,
+        "y": 161
+      },
+      "additional_data": {
+        "main_splitter_state": "000000ff0000000100000002000001ab000003e801ffffffff010000000100"
+      }
+    },
+    "vision_robot_dialog": {
+      "window_class": "VisionRobotDialog",
+      "window_title": "视觉-机器人协作系统",
+      "timestamp": "2025-12-12T15:29:13.651316",
+      "visible": true,
+      "geometry": "01d9d0cb00030000000001d1000001350000081000000541000001d10000015a000008100000054100000000000000000a00000001d10000015a0000081000000541",
+      "state": "000000ff00000000fd00000000000006400000039100000004000000040000000800000008fc000000010000000200000001ffffffff0100000000ffffffff0000000000000000",
+      "is_maximized": false,
+      "is_fullscreen": false,
+      "screen_number": "26990",
+      "screen_geometry": {
+        "width": 2560,
+        "height": 1440
+      },
+      "size": {
+        "width": 1600,
+        "height": 1000
+      },
+      "position": {
+        "x": 465,
+        "y": 309
+      },
+      "additional_data": {
+        "main_splitter_state": "000000ff00000001000000030000012c000003e80000012c01ffffffff010000000100"
+      }
+    }
+  },
+  "global_settings": {
+    "theme": "dark",
+    "auto_save": true,
+    "language": "zh-CN",
+    "window_behavior": {
+      "remember_positions": true,
+      "remember_sizes": true,
+      "remember_maximized": true
+    }
+  }
+}

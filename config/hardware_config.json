@@ -1,0 +1,217 @@
+{
+  "cameras": [
+    {
+      "id": "camera_001",
+      "name": "av",
+      "type": "camera",
+      "brand": "simulation",
+      "model": "程序生成相机",
+      "connection_type": "simulation",
+      "is_simulation": true,
+      "resolution": "2592x1944",
+      "timeout": 5,
+      "fps": 60,
+      "media_type": "程序生成",
+      "media_path": "./workspace/data/data01.bmp",
+      "simulation_fps": 60,
+      "auto_detected_resolution": true,
+      "connection_params": {
+        "media_type": "程序生成",
+        "media_path": "./workspace/data/data01.bmp",
+        "simulation_fps": 60
+      },
+      "hardware_type": "相机",
+      "original_type": "camera"
+    },
+    {
+      "id": "camera_011",
+      "name": "_av2",
+      "type": "camera",
+      "brand": "simulation",
+      "model": "程序生成相机",
+      "connection_type": "simulation",
+      "is_simulation": true,
+      "resolution": "2592x1944",
+      "timeout": 5,
+      "fps": 60,
+      "media_type": "程序生成",
+      "media_path": "./workspace/data/data01.bmp",
+      "simulation_fps": 60,
+      "auto_detected_resolution": true,
+      "auto_trigger": {
+        "enabled": true,
+        "trigger_mode": "software_trigger",
+        "trigger_count": 1,
+        "trigger_interval": 1000,
+        "auto_capture_on_open": false
+      },
+      "connection_params": {
+        "media_type": "程序生成",
+        "media_path": "./workspace/data/data01.bmp",
+        "simulation_fps": 60
+      },
+      "hardware_type": "相机",
+      "original_type": "camera"
+    },
+    {
+      "id": "camera_002",
+      "name": "imgs",
+      "type": "camera",
+      "brand": "simulation",
+      "model": "图片文件夹相机",
+      "connection_type": "simulation",
+      "is_simulation": true,
+      "resolution": "1920x1080",
+      "timeout": 5,
+      "fps": 10,
+      "media_type": "图片文件夹",
+      "media_path": "./workspace/data/simulation_images",
+      "simulation_fps": 10,
+      "auto_detected_resolution": true,
+      "connection_params": {
+        "media_type": "图片文件夹",
+        "media_path": "./workspace/data/simulation_images",
+        "simulation_fps": 10
+      },
+      "hardware_type": "相机",
+      "original_type": "camera"
+    },
+    {
+      "id": "camera_galaxy_01",
+      "name": "Top Camera (ME2C)",
+      "type": "camera",
+      "brand": "galaxy",
+      "model": "ME2C-2000-6GC",
+      "sn": "LAC25061528",
+      "connection_type": "network",
+      "is_simulation": false,
+      "timeout": 5,
+      "fps": 30,
+      "hardware_type": "相机",
+      "original_type": "camera"
+    },
+    {
+      "brand": "hikvision",
+      "connection_params": {
+        "ip": "192.168.1.100",
+        "port": 8080,
+        "timeout": 5
+      },
+      "connection_type": "network",
+      "description": "",
+      "fps": 30,
+      "hardware_type": "相机",
+      "id": "camera_1763709392",
+      "model": "sera",
+      "name": "hikocamera0111",
+      "original_type": "camera",
+      "resolution": "1920x1080",
+      "timeout": 5,
+      "type": "camera"
+    }
+  ],
+  "robots": [
+    {
+      "id": "robot_001",
+      "name": "Yamaha机械臂",
+      "type": "robot",
+      "brand": "yamaha",
+      "model": "YRM-10",
+      "connection_type": "network",
+      "is_simulation": false,
+      "connection_params": {
+        "ip": "192.168.1.100",
+        "port": 8080,
+        "timeout": 5.0
+      },
+      "hardware_type": "机械臂",
+      "original_type": "robot"
+    },
+    {
+      "id": "robot_002",
+      "name": "模拟机械臂",
+      "type": "robot",
+      "brand": "simulation",
+      "model": "Simulation Robot",
+      "connection_type": "simulation",
+      "is_simulation": true,
+      "connection_params": {
+        "模拟模式": "Basic",
+        "响应延迟(ms)": 100,
+        "初始位置": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "工作范围": {
+          "x": 1000,
+          "y": 1000,
+          "z": 1000
+        }
+      },
+      "hardware_type": "机械臂",
+      "original_type": "robot"
+    },
+    {
+      "id": "robot_003",
+      "name": "Elite机械臂",
+      "type": "robot",
+      "brand": "elite",
+      "model": "Elite",
+      "connection_type": "network",
+      "is_simulation": false,
+      "connection_params": {
+        "ip": "127.0.0.1",
+        "port": 8080,
+        "timeout": 5.0
+      },
+      "hardware_type": "机械臂",
+      "original_type": "robot"
+    }
+  ],
+  "lights": [
+    {
+      "id": "light_001",
+      "name": "数字光源",
+      "type": "light",
+      "brand": "digital",
+      "model": "DL-8CH",
+      "connection_type": "network",
+      "is_simulation": false,
+      "connection_params": {
+        "ip": "192.168.1.200",
+        "port": 8080,
+        "timeout": 3.0,
+        "channel_count": 8
+      },
+      "hardware_type": "光源",
+      "original_type": "light"
+    },
+    {
+      "id": "light_002",
+      "name": "模拟光源",
+      "type": "light",
+      "brand": "simulation",
+      "model": "Simulation Light",
+      "connection_type": "simulation",
+      "is_simulation": true,
+      "connection_params": {
+        "通道数": 8,
+        "响应延迟(ms)": 50,
+        "默认亮度": 80,
+        "支持颜色": [
+          "白色",
+          "红色",
+          "绿色",
+          "蓝色",
+          "黄色"
+        ]
+      },
+      "hardware_type": "光源",
+      "original_type": "light"
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+application:
+  app_name: Robot Control System
+  org_name: Robot Control
+  qt_high_dpi_scaling: false
+paths:
+  captures_subdir: captures
+  canvas_temp_subdir: temp/canvas_temp
+  vision_motion_control_temp_subdir: temp/vmc_tmp
+  config_dir: config
+  data_subdir: data
+  logs_subdir: logs
+  paths_subdir: paths
+  pipeline_subdir: pipeline
+  workspace_config_subdir: config
+  workspace_dir: workspace
+  # Source code directories (for development)
+  algorithms_composite_dir: src/algorithms/composite
+system:
+  camera_driver_check_enabled: false
+  debug_mode: false
+ui:
+  camera_display:
+    height: 480
+    width: 640
+  update_intervals:
+    status_update_ms: 1000
+    video_update_ms: 33
+  window:
+    height: 800
+    title: 机器人控制系统
+    width: 1400

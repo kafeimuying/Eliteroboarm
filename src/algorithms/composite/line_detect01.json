@@ -1,0 +1,129 @@
+{
+  "chain": [
+    {
+      "algorithm_id": "gaussian_blur",
+      "display_name": "高斯模糊",
+      "category": "预处理",
+      "description": "对图像进行高斯模糊处理，可用于降噪和预处理",
+      "version": "1.0.0",
+      "author": "System",
+      "parameters": [
+        {
+          "name": "kernel_size",
+          "type": "integer",
+          "value": 5,
+          "description": "模糊核大小（必须为奇数）",
+          "min_value": 1,
+          "max_value": 31,
+          "step": 2,
+          "required": true
+        },
+        {
+          "name": "sigma_x",
+          "type": "float",
+          "value": 0.0,
+          "description": "X方向标准差（0表示自动计算）",
+          "min_value": 0.0,
+          "max_value": 10.0,
+          "step": 0.1,
+          "required": true
+        },
+        {
+          "name": "sigma_y",
+          "type": "float",
+          "value": 0.0,
+          "description": "Y方向标准差（0表示自动计算）",
+          "min_value": 0.0,
+          "max_value": 10.0,
+          "step": 0.1,
+          "required": true
+        }
+      ],
+      "layout": {
+        "position": {
+          "x": 318.0,
+          "y": 198.0
+        },
+        "node_id": "algorithm_2"
+      }
+    },
+    {
+      "algorithm_id": "hp_roi_edge_detection",
+      "display_name": "高性能ROI抓边检测",
+      "category": "边缘检测",
+      "description": "使用C++扩展实现的高性能ROI区域抓边检测算法",
+      "version": "1.0.0",
+      "author": "System",
+      "parameters": [
+        {
+          "name": "roi_region",
+          "type": "roi",
+          "value": {
+            "x": 987,
+            "y": 877,
+            "width": 1500,
+            "height": 590
+          },
+          "description": "感兴趣区域",
+          "roi_mode": "manual",
+          "required": true
+        },
+        {
+          "name": "threshold",
+          "type": "integer",
+          "value": 127,
+          "description": "边缘检测阈值",
+          "min_value": 0,
+          "max_value": 255,
+          "required": true
+        },
+        {
+          "name": "min_line_length",
+          "type": "integer",
+          "value": 50,
+          "description": "最小线段长度",
+          "min_value": 10,
+          "max_value": 500,
+          "required": true
+        }
+      ],
+      "layout": {
+        "position": {
+          "x": 535.0,
+          "y": 285.0
+        },
+        "node_id": "algorithm_3"
+      }
+    }
+  ],
+  "metadata": {
+    "version": "1.0",
+    "algorithm_count": 0,
+    "canvas_layout": true,
+    "created_at": "2025-10-24T13:45:35.403585",
+    "combined_algorithm_id": "line_detect01",
+    "algorithm_info": {
+      "algorithm_id": "line_detect01",
+      "display_name": "抓边cpp",
+      "category": "组合算法",
+      "secondary_category": "检测组合",
+      "description": "包含 高斯模糊, 高性能ROI抓边检测 的组合算法",
+      "version": "1.0.0",
+      "author": "User",
+      "tags": [
+        "组合",
+        "链式",
+        "预处理",
+        "检测"
+      ]
+    }
+  },
+  "connections": [
+    {
+      "from": "gaussian_blur",
+      "to": "hp_roi_edge_detection",
+      "from_port": "right",
+      "to_port": "left"
+    }
+  ]
+}

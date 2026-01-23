@@ -1,0 +1,126 @@
+{
+  "chain": [
+    {
+      "algorithm_id": "morphology",
+      "display_name": "形态学操作",
+      "category": "形态学",
+      "description": "对图像进行形态学操作（腐蚀、膨胀、开运算、闭运算等）",
+      "version": "1.0.0",
+      "author": "System",
+      "parameters": [
+        {
+          "name": "operation",
+          "type": "choice",
+          "value": "MORPH_CLOSE",
+          "description": "形态学操作类型",
+          "choices": [
+            "MORPH_ERODE",
+            "MORPH_DILATE",
+            "MORPH_OPEN",
+            "MORPH_CLOSE",
+            "MORPH_GRADIENT",
+            "MORPH_TOPHAT",
+            "MORPH_BLACKHAT"
+          ],
+          "required": true
+        },
+        {
+          "name": "kernel_shape",
+          "type": "choice",
+          "value": "MORPH_RECT",
+          "description": "核形状",
+          "choices": [
+            "MORPH_RECT",
+            "MORPH_ELLIPSE",
+            "MORPH_CROSS"
+          ],
+          "required": true
+        },
+        {
+          "name": "kernel_size",
+          "type": "integer",
+          "value": 3,
+          "description": "核大小",
+          "min_value": 1,
+          "max_value": 31,
+          "required": true
+        },
+        {
+          "name": "iterations",
+          "type": "integer",
+          "value": 1,
+          "description": "迭代次数",
+          "min_value": 1,
+          "max_value": 10,
+          "required": true
+        }
+      ],
+      "layout": {
+        "position": {
+          "x": 322.0,
+          "y": 187.0
+        },
+        "node_id": "algorithm_2"
+      }
+    },
+    {
+      "algorithm_id": "roi_extract",
+      "display_name": "ROI区域提取",
+      "category": "预处理",
+      "description": "从图像中提取指定的感兴趣区域",
+      "version": "1.0.0",
+      "author": "System",
+      "parameters": [
+        {
+          "name": "roi_region",
+          "type": "roi",
+          "value": {
+            "x": 0,
+            "y": 0,
+            "width": 200,
+            "height": 200
+          },
+          "description": "感兴趣区域",
+          "roi_mode": "manual",
+          "required": true
+        }
+      ],
+      "layout": {
+        "position": {
+          "x": 639.0,
+          "y": 226.0
+        },
+        "node_id": "algorithm_3"
+      }
+    }
+  ],
+  "metadata": {
+    "version": "1.0",
+    "algorithm_count": 0,
+    "canvas_layout": true,
+    "created_at": "2025-10-24T14:29:04.010874",
+    "combined_algorithm_id": "line_detection_py",
+    "algorithm_info": {
+      "algorithm_id": "line_detection_py",
+      "display_name": "抓遍python",
+      "category": "组合算法",
+      "secondary_category": "预处理组合",
+      "description": "包含 形态学操作, ROI区域提取 的组合算法",
+      "version": "1.0.0",
+      "author": "Annan",
+      "tags": [
+        "组合",
+        "链式",
+        "预处理"
+      ]
+    }
+  },
+  "connections": [
+    {
+      "from": "morphology",
+      "to": "roi_extract",
+      "from_port": "right",
+      "to_port": "left"
+    }
+  ]
+}
