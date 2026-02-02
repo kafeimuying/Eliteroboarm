@@ -124,3 +124,44 @@ class CalibrationService:
             self._log("错误", f"标定启动失败: {result.get('error')}")
 
         return result
+
+    def start_3d_calibration(self, layers: int, params: Dict[str, float]) -> Dict[str, Any]:
+        """
+        启动3D标定流程 (C++加速)
+        """
+        if not self.robot_service.is_connected():
+            return {'success': False, 'error': 'Robot not connected'}
+
+        # 获取底层驱动实例
+        driver = getattr(self.robot_service, 'robot', None)
+        if not driver:
+            return {'success': False, 'error': 'Robot driver instance not found'}
+            
+        # 检查是否为Elite机器人且支持C++扩展
+        if not hasattr(driver, '_run_cpp_3d_calibration') or not hasattr(driver, 'calibration_controller'):
+             return {'success': False, 'error': 'Current robot driver does not support C++ 3D calibration'}
+
+        # 注入拍照回调
+        if hasattr(driver, 'set_capture_callback'):
+            self._log("信息", "配置3D自动标定：注入拍照回调函数")
+            driver.set_capture_callback(self._auto_capture_callback)
+
+        self._log("信息", f"启动3D标定流程 (层数: {layers}, 尺寸: {params})")
+
+        # 在新线程中运行，避免阻塞UI
+        import threading
+        base_width = params.get('base_width', 300.0)
+        top_width = params.get('top_width', 150.0)
+        height = params.get('height', 100.0)
+        tilt_angle = params.get('tilt_angle', 10.0)
+        direction = params.get('direction', 'Z+')
+
+        def run_thread():
+            try:
+                driver._run_cpp_3d_calibration(layers, base_width, top_width, height, tilt_angle, direction)
+            except Exception as e:
+                self._log("错误", f"3D标定执行异常: {e}")
+
+        threading.Thread(target=run_thread, daemon=True).start()
+
+        return {'success': True, 'message': '3D Calibration started'}

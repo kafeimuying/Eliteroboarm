@@ -13,9 +13,101 @@
 #include <string>
 #include <sstream>
 #include <iomanip>
+#include <array>
 
 namespace py = pybind11;
 using namespace ELITE;
+
+// ==========================================
+// Minimal 3D Math Helpers for Rotation Logic
+// ==========================================
+struct Vec3
+{
+    double x, y, z;
+    Vec3 operator+(const Vec3 &o) const { return {x + o.x, y + o.y, z + o.z}; }
+    Vec3 operator-(const Vec3 &o) const { return {x - o.x, y - o.y, z - o.z}; }
+    Vec3 operator*(double s) const { return {x * s, y * s, z * s}; }
+    double dot(const Vec3 &o) const { return x * o.x + y * o.y + z * o.z; }
+    Vec3 cross(const Vec3 &o) const { return {y * o.z - z * o.y, z * o.x - x * o.z, x * o.y - y * o.x}; }
+    double length() const { return std::sqrt(x * x + y * y + z * z); }
+    Vec3 normalize() const
+    {
+        double l = length();
+        if (l < 1e-9)
+            return {0, 0, 1};
+        return {x / l, y / l, z / l};
+    }
+};
+
+// Convert Rotation Matrix (column major or orthonormal vectors) to Axis-Angle Vector (Rx, Ry, Rz)
+// R = [Xx Yx Zx]
+//     [Xy Yy Zy]
+//     [Xz Yz Zz]
+std::vector<double> matrixToRotVec(const Vec3 &X, const Vec3 &Y, const Vec3 &Z)
+{
+    // Rotation Matrix elements
+    double r11 = X.x, r12 = Y.x, r13 = Z.x;
+    double r21 = X.y, r22 = Y.y, r23 = Z.y;
+    double r31 = X.z, r32 = Y.z, r33 = Z.z;
+
+    double trace = r11 + r22 + r33;
+    double theta = 0.0;
+    Vec3 axis = {0, 0, 0};
+
+    if (trace >= 3.0 - 1e-6)
+    {
+        // Identity
+        return {0, 0, 0};
+    }
+    else if (trace <= -1.0 + 1e-6)
+    {
+        // 180 degree rotation singularity
+        theta = 3.141592653589793;
+        if (r11 > r22 && r11 > r33)
+            axis = {std::sqrt((r11 + 1) / 2), (r12 + r21) / (2 * std::sqrt((r11 + 1) / 2)), (r13 + r31) / (2 * std::sqrt((r11 + 1) / 2))};
+        else if (r22 > r33)
+            axis = {(r12 + r21) / (2 * std::sqrt((r22 + 1) / 2)), std::sqrt((r22 + 1) / 2), (r23 + r32) / (2 * std::sqrt((r22 + 1) / 2))};
+        else
+            axis = {(r13 + r31) / (2 * std::sqrt((r33 + 1) / 2)), (r23 + r32) / (2 * std::sqrt((r33 + 1) / 2)), std::sqrt((r33 + 1) / 2)};
+    }
+    else
+    {
+        theta = std::acos((trace - 1.0) / 2.0);
+        double s = 2.0 * std::sin(theta);
+        axis.x = (r32 - r23) / s;
+        axis.y = (r13 - r31) / s;
+        axis.z = (r21 - r12) / s;
+    }
+
+    axis = axis.normalize();
+    return {axis.x * theta, axis.y * theta, axis.z * theta};
+}
+
+// Convert Axis-Angle (Rx, Ry, Rz) to Matrix (X, Y, Z vectors)
+void rotVecToMatrix(double rx, double ry, double rz, Vec3 &X, Vec3 &Y, Vec3 &Z)
+{
+    double theta = std::sqrt(rx * rx + ry * ry + rz * rz);
+    if (theta < 1e-6)
+    {
+        X = {1, 0, 0};
+        Y = {0, 1, 0};
+        Z = {0, 0, 1};
+        return;
+    }
+
+    double kx = rx / theta;
+    double ky = ry / theta;
+    double kz = rz / theta;
+
+    double c = std::cos(theta);
+    double s = std::sin(theta);
+    double v = 1 - c;
+
+    X = {kx * kx * v + c, kx * ky * v - kz * s, kx * kz * v + ky * s};
+    Y = {kx * ky * v + kz * s, ky * ky * v + c, ky * kz * v - kx * s};
+    Z = {kx * kz * v - ky * s, ky * kz * v + kx * s, kz * kz * v + c};
+}
+// ==========================================
 
 // 9-Point Grid Configuration
 const double GRID_STEP = 0.05; // 50mm spacing
@@ -400,6 +492,264 @@ public:
         primary->sendScript(script_home);
     }
 
+    void run_3d_calibration(int layers,
+                            double base_width, double top_width, double height, double tilt_angle,
+                            std::string direction,
+                            const std::function<void(std::string)> &log_callback,
+                            const std::function<void(int)> &capture_callback,
+                            const std::function<std::vector<double>()> &get_pose_callback)
+    {
+        // Simple Logger Wrapper
+        auto log = [&](const std::string &msg)
+        {
+            if (log_callback)
+                log_callback(msg);
+            else
+                std::cout << msg << std::endl;
+        };
+
+        if (!dashboard || !primary)
+        {
+            log("Error: Not connected (nullptr check)");
+            return;
+        }
+
+        // Helper to get current pose in Meters/Radians from Python
+        auto get_current_pose_m_rad = [&]() -> vector6d_t
+        {
+            if (!get_pose_callback)
+                return {0, 0, 0, 0, 0, 0};
+
+            // Call into Python (GIL re-acquired automatically)
+            std::vector<double> p = get_pose_callback();
+
+            if (p.size() < 6)
+                return {0, 0, 0, 0, 0, 0};
+            vector6d_t ret;
+            // Convert mm -> m, deg -> rad
+            ret[0] = p[0] / 1000.0;
+            ret[1] = p[1] / 1000.0;
+            ret[2] = p[2] / 1000.0;
+            ret[3] = p[3] / 57.29578; // 180 / PI approx
+            ret[4] = p[4] / 57.29578;
+            ret[5] = p[5] / 57.29578;
+            return ret;
+        };
+
+        // Ensure Robot is Ready
+        if (!dashboard->powerOn())
+        {
+            log("Failed to power on");
+            return;
+        }
+        if (!dashboard->brakeRelease())
+        {
+            log("Failed to release brake");
+            return;
+        }
+
+        log("[C++] Starting 3D Pyramid Calibration...");
+        std::stringstream info_ss;
+        info_ss << "Layers: " << layers << ", Base: " << base_width << ", Top: " << top_width
+                << ", Height: " << height << ", Tilt: " << tilt_angle << ", Dir: " << direction;
+        log(info_ss.str());
+
+        // Get center point (Current Pose)
+        vector6d_t center_pose = get_current_pose_m_rad();
+
+        std::vector<vector6d_t> points;
+        std::vector<std::string> data_lines;
+
+        // Convert inputs mm -> m, deg -> rad
+        double base_width_m = base_width / 1000.0;
+        double top_width_m = top_width / 1000.0;
+        double height_m = height / 1000.0;
+        double tilt_rad = tilt_angle / 57.29578;
+
+        // Direction Logic Configuration
+        int ax_h = 2;  // Height Axis (Default Z)
+        int ax_w1 = 0; // Width 1 Axis (Default X)
+        int ax_w2 = 1; // Width 2 Axis (Default Y)
+        int ax_r1 = 3; // Rotation 1 Axis (RX) - Changed by w2
+        int ax_r2 = 4; // Rotation 2 Axis (RY) - Changed by w1
+        double h_sign = 1.0;
+
+        if (direction == "Z+")
+        {
+            ax_h = 2;
+            ax_w1 = 0;
+            ax_w2 = 1;
+            ax_r1 = 3;
+            ax_r2 = 4;
+            h_sign = 1.0;
+        }
+        else if (direction == "Z-")
+        {
+            ax_h = 2;
+            ax_w1 = 0;
+            ax_w2 = 1;
+            ax_r1 = 3;
+            ax_r2 = 4;
+            h_sign = -1.0;
+        }
+        else if (direction == "Y+")
+        {
+            ax_h = 1;
+            ax_w1 = 0;
+            ax_w2 = 2;
+            ax_r1 = 3;
+            ax_r2 = 5;
+            h_sign = 1.0; // Base: XZ. Rot: RX, RZ
+        }
+        else if (direction == "Y-")
+        {
+            ax_h = 1;
+            ax_w1 = 0;
+            ax_w2 = 2;
+            ax_r1 = 3;
+            ax_r2 = 5;
+            h_sign = -1.0;
+        }
+        else if (direction == "X+")
+        {
+            ax_h = 0;
+            ax_w1 = 1;
+            ax_w2 = 2;
+            ax_r1 = 4;
+            ax_r2 = 5;
+            h_sign = 1.0; // Base: YZ. Rot: RY, RZ
+        }
+        else if (direction == "X-")
+        {
+            ax_h = 0;
+            ax_w1 = 1;
+            ax_w2 = 2;
+            ax_r1 = 4;
+            ax_r2 = 5;
+            h_sign = -1.0;
+        }
+
+        // Corner signs for [w1, w2]
+        double corner_signs[4][2] = {
+            {-1.0, -1.0},
+            {1.0, -1.0},
+            {1.0, 1.0},
+            {-1.0, 1.0}};
+
+        std::vector<vector6d_t> targets;
+
+        // Simpler Implementation: No Rotation Logic
+        // We do NOT use LookAt or Tilt.
+        // Orientation is kept identical to center_pose.
+
+        for (int i = 0; i < layers; ++i)
+        {
+            double ratio = 0.0;
+            if (layers > 1)
+                ratio = (double)i / (double)(layers - 1);
+
+            double layer_z_offset = height_m * ratio * h_sign;
+            double current_width = base_width_m - (base_width_m - top_width_m) * ratio;
+            double half_w = current_width / 2.0;
+
+            for (int k = 0; k < 4; ++k)
+            {
+                vector6d_t p = center_pose;
+
+                // Apply Height
+                p[ax_h] += layer_z_offset;
+
+                // Apply Widths
+                double d_w1 = corner_signs[k][0] * half_w;
+                double d_w2 = corner_signs[k][1] * half_w;
+                p[ax_w1] += d_w1;
+                p[ax_w2] += d_w2;
+
+                // Fixed Orientation (No rotation changes)
+                p[3] = center_pose[3];
+                p[4] = center_pose[4];
+                p[5] = center_pose[5];
+
+                targets.push_back(p);
+            }
+        }
+
+        // Execute Motion
+        for (size_t i = 0; i < targets.size(); ++i)
+        {
+            int point_idx = i + 1;
+            std::stringstream ss;
+            ss << "Moving to Point " << point_idx << " (" << (i + 1) << "/" << targets.size() << ")";
+            log(ss.str());
+
+            // Move to Target
+            std::string script = "movel(" + vecToString(targets[i]) + ", a=" + std::to_string(MOVE_ACCEL) + ", v=" + std::to_string(MOVE_SPEED) + ")\n";
+            primary->sendScript(script);
+
+            // Wait for completion
+            int timeout = 150; // 15 seconds max
+            while (timeout > 0)
+            {
+                vector6d_t cur = get_current_pose_m_rad();
+                double dist_sq = 0;
+                for (int k = 0; k < 3; ++k)
+                    dist_sq += std::pow(cur[k] - targets[i][k], 2);
+
+                // Check position convergence
+                if (std::sqrt(dist_sq) < 0.002)
+                    break;
+
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                timeout--;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(500)); // Stabilization
+
+            // Capture
+            auto current_pose = get_current_pose_m_rad();
+            std::stringstream data_ss;
+            data_ss << point_idx << ", "
+                    << std::fixed << std::setprecision(6) << current_pose[0] << ", "
+                    << current_pose[1] << ", " << current_pose[2] << ", "
+                    << current_pose[3] << ", " << current_pose[4] << ", " << current_pose[5];
+
+            data_lines.push_back(data_ss.str());
+            log("Point " + std::to_string(point_idx) + " Data: " + data_ss.str());
+
+            log("Triggering Capture...");
+            if (capture_callback)
+            {
+                try
+                {
+                    capture_callback(point_idx);
+                }
+                catch (const std::exception &e)
+                {
+                    log(std::string("Capture error: ") + e.what());
+                }
+            }
+        }
+
+        // Save Data
+        std::string filename = "workspace/calibration_3d_data.txt";
+        std::ofstream outfile(filename);
+        if (outfile.is_open())
+        {
+            outfile << "PointID, X, Y, Z, Rx, Ry, Rz\n";
+            for (const auto &line : data_lines)
+                outfile << line << "\n";
+            outfile.close();
+            log("3D Calibration data saved to: " + filename);
+        }
+        else
+        {
+            log("Failed to open file: " + filename);
+        }
+
+        log("Calibration finished. Returning to center...");
+        std::string script_home = "movel(" + vecToString(center_pose) + ", a=0.5, v=0.2)\n";
+        primary->sendScript(script_home);
+    }
+
 private:
     std::string robot_ip;
     std::unique_ptr<DashboardClient> dashboard;
@@ -429,5 +779,14 @@ PYBIND11_MODULE(elite_ext, m)
         .def("disconnect", &EliteCalibration::disconnect)
         .def("run_calibration", &EliteCalibration::run_calibration,
              py::call_guard<py::gil_scoped_release>(),
+             py::arg("log_callback"), py::arg("capture_callback"), py::arg("get_pose_callback"))
+        .def("run_3d_calibration", &EliteCalibration::run_3d_calibration,
+             py::call_guard<py::gil_scoped_release>(),
+             py::arg("layers") = 2,
+             py::arg("base_width") = 100.0,
+             py::arg("top_width") = 50.0,
+             py::arg("height") = 50.0,
+             py::arg("tilt_angle") = 0.0,
+             py::arg("direction") = "Z+",
              py::arg("log_callback"), py::arg("capture_callback"), py::arg("get_pose_callback"));
 }

@@ -467,6 +467,53 @@ class EliteRobot(IRobot):
             error(f"Failed to start Elite robot calibration: {e}", "ROBOT_DRIVER")
             return {'success': False, 'error': str(e)}
 
+    def _run_cpp_3d_calibration(self, layers, base_width, top_width, height, tilt_angle, direction="Z+"):
+        """Invoke C++ 3D Calibration Implementation"""
+        info("[Calibration] Starting C++ 3D Calibration...", "ROBOT_DRIVER")
+        self._broadcast_log(f"启动C++ 3D标定流程 (层数:{layers}, 方向:{direction})...")
+
+        ip = self.config.get('connection_params', {}).get('ip', '127.0.0.1')
+        recipe_path = os.getcwd()
+
+        # 1. Connect Calibration Controller
+        if not self.calibration_controller.connect(ip, recipe_path):
+             self._broadcast_log("Error: C++标定控制器连接失败")
+             return
+
+        # 2. Define Callbacks
+        def log_wrapper(msg: str):
+            self._broadcast_log(f"[C++] {msg}")
+            # info(f"[Ext] {msg}", "ROBOT_DRIVER")
+
+        def capture_wrapper(idx: int):
+            self._broadcast_log(f"[C++] 请求拍照: 点 {idx}")
+            if self._capture_callback:
+                try:
+                    self._capture_callback(idx)
+                except Exception as e:
+                    error(f"Python capture callback failed: {e}", "ROBOT_DRIVER")
+
+        def get_pose_wrapper() -> List[float]:
+            # Bypass to Python logic to get pose (though C++ controller can do it too)
+            # This is just to satisfy the interface requirement or use specific Python offsets
+            pos = self.get_position()
+            if pos:
+                return list(pos)
+            return [0.0] * 6
+
+        # 3. Run 3D Calibration
+        try:
+            self.calibration_controller.run_3d_calibration(
+                layers, base_width, top_width, height, tilt_angle, direction,
+                log_wrapper, capture_wrapper, get_pose_wrapper
+            )
+            self._broadcast_log("C++ 3D标定流程结束")
+        except Exception as e:
+            self._broadcast_log(f"C++ 3D标定异常: {e}")
+            error(f"C++ 3D Calibration Exception: {e}", "ROBOT_DRIVER")
+        finally:
+            self.calibration_controller.disconnect()
+
     def _run_cpp_calibration(self):
         """Invoke C++ Calibration Implementation"""
         info("[Calibration] Starting C++ 9-point calibration (Optimization Enabled)...", "ROBOT_DRIVER")

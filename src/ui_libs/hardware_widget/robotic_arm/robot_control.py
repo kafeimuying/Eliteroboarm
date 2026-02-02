@@ -218,6 +218,24 @@ class RobotControlTab(QWidget):
         self.test_btn.clicked.connect(self.test_robot_connection)
         control_layout.addWidget(self.test_btn)
 
+        self.calib_3d_btn = QPushButton("执行3D标定")
+        self.calib_3d_btn.setMinimumWidth(100)
+        self.calib_3d_btn.clicked.connect(self.show_3d_calibration_dialog)
+        self.calib_3d_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #673AB7;
+                color: white;
+                border: none;
+                padding: 6px 12px;
+                border-radius: 6px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #5E35B1;
+            }
+        """)
+        control_layout.addWidget(self.calib_3d_btn)
+
         # 标定确认按钮 (默认隐藏，仅在Elite标定时显示)
         self.confirm_btn = QPushButton("✅ 确认/下一步")
         self.confirm_btn.setMinimumWidth(120)
@@ -361,6 +379,9 @@ class RobotControlTab(QWidget):
         motion_mode_layout = QHBoxLayout()
         motion_mode_layout.addWidget(QLabel("运动模式:"))
         self.motion_mode_combo = QComboBox()
+        self.motion_mode_combo.setMinimumWidth(100)
+        self.motion_mode_combo.setMinimumHeight(35)
+        self.motion_mode_combo.setStyleSheet("QComboBox { font-size: 14px; padding: 5px; }")
         self.motion_mode_combo.addItems(["手动", "自动"])
         self.motion_mode_combo.currentTextChanged.connect(self.on_motion_mode_changed)
         motion_mode_layout.addWidget(self.motion_mode_combo)
@@ -483,8 +504,10 @@ class RobotControlTab(QWidget):
             spinbox.setRange(-2000, 2000)
             spinbox.setSuffix(" mm")
             spinbox.setValue(0.0)
-            spinbox.setMinimumWidth(75)
-            spinbox.setMaximumWidth(90)
+            spinbox.setMinimumWidth(100)
+            spinbox.setMaximumWidth(120)
+            spinbox.setMinimumHeight(35)
+            spinbox.setStyleSheet("QDoubleSpinBox { font-size: 14px; }")
             spinbox.setButtonSymbols(QDoubleSpinBox.ButtonSymbols.PlusMinus)
             linear_inner_layout.addWidget(spinbox, row + 1, col)
             if col == 0:
@@ -516,8 +539,10 @@ class RobotControlTab(QWidget):
             spinbox.setSuffix(" °")
             spinbox.setDecimals(1)
             spinbox.setValue(0.0)
-            spinbox.setMinimumWidth(75)
-            spinbox.setMaximumWidth(90)
+            spinbox.setMinimumWidth(100)
+            spinbox.setMaximumWidth(120)
+            spinbox.setMinimumHeight(35)
+            spinbox.setStyleSheet("QDoubleSpinBox { font-size: 14px; }")
             spinbox.setButtonSymbols(QDoubleSpinBox.ButtonSymbols.PlusMinus)
             rotation_inner_layout.addWidget(spinbox, row + 1, col)
             if col == 0:
@@ -554,17 +579,17 @@ class RobotControlTab(QWidget):
 
         move_btn = QPushButton("🎯 移动到位置")
         move_btn.clicked.connect(self.move_to_position)
-        move_btn.setMinimumSize(84, 28)  # 缩小30%: 原来120x40 -> 84x28
-        move_btn.setMaximumSize(100, 35)  # 适当放宽最大尺寸
+        move_btn.setMinimumSize(120, 40)
+        move_btn.setMaximumSize(200, 50)
         move_btn.setStyleSheet("""
             QPushButton {
                 background-color: #4CAF50;
                 color: white;
                 border: none;
-                padding: 7px 14px;  # 缩小30% padding
+                padding: 10px 20px;
                 border-radius: 4px;
                 font-weight: bold;
-                font-size: 12px;  # 缩小字体
+                font-size: 14px;
             }
             QPushButton:hover {
                 background-color: #45a049;
@@ -575,17 +600,17 @@ class RobotControlTab(QWidget):
         # 当前位置按钮
         current_pos_btn = QPushButton("📍 读取当前位置")
         current_pos_btn.clicked.connect(self.read_current_position)
-        current_pos_btn.setMinimumSize(84, 28)  # 缩小30%: 原来120x40 -> 84x28
-        current_pos_btn.setMaximumSize(100, 35)  # 适当放宽最大尺寸
+        current_pos_btn.setMinimumSize(120, 40)
+        current_pos_btn.setMaximumSize(200, 50)
         current_pos_btn.setStyleSheet("""
             QPushButton {
                 background-color: #2196F3;
                 color: white;
                 border: none;
-                padding: 7px 14px;  # 缩小30% padding
+                padding: 10px 20px;
                 border-radius: 4px;
                 font-weight: bold;
-                font-size: 12px;  # 缩小字体
+                font-size: 14px;
             }
             QPushButton:hover {
                 background-color: #1976D2;
@@ -1273,31 +1298,135 @@ class RobotControlTab(QWidget):
         else:
             # 如果没有相机服务，回退到原始的测试连接
             self.add_robot_log("警告", "相机服务未就绪，仅执行机械臂运动测试")
-            result = self.robot_service.test_connection()
 
-        if result['success']:
-            device_type = result.get('device_info', {}).get('type', '未知')
-            info(f"标定/测试启动成功，设备: {device_type}", "ROBOT_UI")
-            self.add_robot_log("信息", f"标定/测试启动成功，设备: {device_type}")
+    def show_3d_calibration_dialog(self):
+        """显示3D标定配置对话框"""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("3D标定设置")
+        layout = QVBoxLayout()
+
+        # 层数选择
+        layer_group = QGroupBox("层数选择")
+        layer_layout = QHBoxLayout()
+        layer_layout.addWidget(QLabel("四棱台层数:"))
+        layer_spin = QSpinBox()
+        layer_spin.setRange(2, 5)
+        layer_spin.setValue(3)
+        layer_layout.addWidget(layer_spin)
+        layer_group.setLayout(layer_layout)
+        layout.addWidget(layer_group)
+
+        # 尺寸参数
+        size_group = QGroupBox("棱台尺寸参数 (mm)")
+        size_layout = QGridLayout()
+
+        # 底面边长
+        size_layout.addWidget(QLabel("底面边长:"), 0, 0)
+        base_width_spin = QDoubleSpinBox()
+        base_width_spin.setRange(100, 1000)
+        base_width_spin.setValue(300.0)
+        base_width_spin.setSuffix(" mm")
+        size_layout.addWidget(base_width_spin, 0, 1)
+
+        # 顶面边长
+        size_layout.addWidget(QLabel("顶面边长:"), 1, 0)
+        top_width_spin = QDoubleSpinBox()
+        top_width_spin.setRange(50, 500)
+        top_width_spin.setValue(150.0)
+        top_width_spin.setSuffix(" mm")
+        size_layout.addWidget(top_width_spin, 1, 1)
+
+        # 高度
+        size_layout.addWidget(QLabel("总高度:"), 2, 0)
+        height_spin = QDoubleSpinBox()
+        height_spin.setRange(50, 500)
+        height_spin.setValue(100.0)
+        height_spin.setSuffix(" mm")
+        size_layout.addWidget(height_spin, 2, 1)
+        
+        # 倾斜角度
+        size_layout.addWidget(QLabel("向心倾斜:"), 3, 0)
+        tilt_spin = QDoubleSpinBox()
+        tilt_spin.setRange(0, 45)
+        tilt_spin.setValue(10.0)
+        tilt_spin.setSuffix(" °")
+        size_layout.addWidget(tilt_spin, 3, 1)
+
+        # 标定方向
+        size_layout.addWidget(QLabel("Generate Direction:"), 4, 0)
+        direction_combo = QComboBox()
+        direction_combo.addItems(["Z+", "Z-", "X+", "X-", "Y+", "Y-"])
+        # Default to Z+ (Standard)
+        direction_combo.setCurrentText("Z+")
+        size_layout.addWidget(direction_combo, 4, 1)
+
+        size_group.setLayout(size_layout)
+        layout.addWidget(size_group)
+
+        # 按钮
+        btn_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+        btn_box.accepted.connect(dialog.accept)
+        btn_box.rejected.connect(dialog.reject)
+        layout.addWidget(btn_box)
+        
+        dialog.setLayout(layout)
+
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            params = {
+                "base_width": base_width_spin.value(),
+                "top_width": top_width_spin.value(),
+                "height": height_spin.value(),
+                # Add new parameter to dictionary
+                "tilt_angle": tilt_spin.value(),
+                "direction": direction_combo.currentText()
+            }
+            self.execute_3d_calibration(layer_spin.value(), params)
+
+    def execute_3d_calibration(self, layers: int, params: dict = None):
+        """执行3D标定轨迹"""
+        if not self.robot_service.is_connected():
+            QMessageBox.warning(self, "错误", "请先连接机械臂")
+            return
+
+        # 懒加载标定服务
+        if not self.calibration_service:
+            if not self.camera_service:
+                 # 尝试获取全局唯一的camera_service，或者直接创建临时的
+                # 这里假设上层已经初始化了camera_service，如果没有则警告
+                pass 
             
-            # 如果是Elite机械臂，显示确认按钮
-            if 'Elite' in device_type:
-                # 全自动模式：隐藏确认按钮
-                self.confirm_btn.setVisible(False)
-                QMessageBox.information(self, "自动标定已启动",
-                    f"全自动标定程序已启动。\n"
-                    f"机器人将自动移动并在每个点自动拍照。\n"
-                    f"无需手动点击确认。请保持安全距离。")
+            self.calibration_service = CalibrationService(self.robot_service, self.camera_service)
+            self.calibration_service.set_log_callback(self.emit_log)
+
+        # 使用自定义参数或默认参数
+        if params is None:
+            params = {
+                "base_width": 300.0,
+                "top_width": 150.0,
+                "height": 100.0,
+                "tilt_angle": 10.0,
+                "direction": "Z+"
+            }
+
+        msg = f"即将执行3D自动标定 (C++加速)\n\n" \
+              f"层数: {layers}\n" \
+              f"底面: {params['base_width']}mm, 顶面: {params['top_width']}mm\n" \
+              f"高度: {params['height']}mm, 倾角: {params['tilt_angle']}°\n" \
+              f"方向: {params.get('direction', 'Z+')}\n\n" \
+              f"请确认周围无障碍物，机械臂将自动运行！"
+
+        reply = QMessageBox.question(self, "确认执行", msg,
+                                   QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+                                   
+        if reply == QMessageBox.StandardButton.Yes:
+            self.add_robot_log("信息", "启动C++ 3D标定流程...")
+            # 调用Service层的3D标定接口
+            result = self.calibration_service.start_3d_calibration(layers, params)
+            
+            if result['success']:
+                QMessageBox.information(self, "已启动", "3D标定程序已在后台启动，请关注日志输出。")
             else:
-                QMessageBox.information(self, "测试成功",
-                    f"标定/测试启动成功！\n"
-                    f"设备信息: {device_type}")
-        else:
-            error_msg = result.get('error', '未知错误')
-            warning(f"标定测试失败: {error_msg}", "ROBOT_UI")
-            self.add_robot_log("警告", f"标定测试失败: {error_msg}")
-            QMessageBox.warning(self, "操作失败",
-                f"启动失败！\n错误信息: {error_msg}")
+                QMessageBox.warning(self, "启动失败", f"无法启动3D标定: {result.get('error')}")
 
     def confirm_calibration_step(self):
         """确认标定步骤"""
