@@ -130,7 +130,7 @@ logs/*.log
 
 # temp folder (deprecated, use workspace/canvas_temp instead)
 # workspace/ directory - but keep only data/ folder
-workspace/captures/
+# workspace/captures/
 workspace/config/
 workspace/logs/
 workspace/paths/
