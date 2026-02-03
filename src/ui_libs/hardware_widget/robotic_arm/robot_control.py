@@ -1324,7 +1324,7 @@ class RobotControlTab(QWidget):
         size_layout.addWidget(QLabel("底面边长:"), 0, 0)
         base_width_spin = QDoubleSpinBox()
         base_width_spin.setRange(100, 1000)
-        base_width_spin.setValue(300.0)
+        base_width_spin.setValue(100.0)
         base_width_spin.setSuffix(" mm")
         size_layout.addWidget(base_width_spin, 0, 1)
 
@@ -1332,7 +1332,7 @@ class RobotControlTab(QWidget):
         size_layout.addWidget(QLabel("顶面边长:"), 1, 0)
         top_width_spin = QDoubleSpinBox()
         top_width_spin.setRange(50, 500)
-        top_width_spin.setValue(150.0)
+        top_width_spin.setValue(50.0)
         top_width_spin.setSuffix(" mm")
         size_layout.addWidget(top_width_spin, 1, 1)
 
@@ -1340,18 +1340,10 @@ class RobotControlTab(QWidget):
         size_layout.addWidget(QLabel("总高度:"), 2, 0)
         height_spin = QDoubleSpinBox()
         height_spin.setRange(50, 500)
-        height_spin.setValue(100.0)
+        height_spin.setValue(50.0)
         height_spin.setSuffix(" mm")
         size_layout.addWidget(height_spin, 2, 1)
         
-        # 倾斜角度
-        size_layout.addWidget(QLabel("向心倾斜:"), 3, 0)
-        tilt_spin = QDoubleSpinBox()
-        tilt_spin.setRange(0, 45)
-        tilt_spin.setValue(10.0)
-        tilt_spin.setSuffix(" °")
-        size_layout.addWidget(tilt_spin, 3, 1)
-
         # 标定方向
         size_layout.addWidget(QLabel("Generate Direction:"), 4, 0)
         direction_combo = QComboBox()
@@ -1376,8 +1368,7 @@ class RobotControlTab(QWidget):
                 "base_width": base_width_spin.value(),
                 "top_width": top_width_spin.value(),
                 "height": height_spin.value(),
-                # Add new parameter to dictionary
-                "tilt_angle": tilt_spin.value(),
+                # Tilt angle removed from UI
                 "direction": direction_combo.currentText()
             }
             self.execute_3d_calibration(layer_spin.value(), params)
@@ -1401,17 +1392,16 @@ class RobotControlTab(QWidget):
         # 使用自定义参数或默认参数
         if params is None:
             params = {
-                "base_width": 300.0,
-                "top_width": 150.0,
-                "height": 100.0,
-                "tilt_angle": 10.0,
+                "base_width": 100.0,
+                "top_width": 50.0,
+                "height": 50.0,
                 "direction": "Z+"
             }
 
         msg = f"即将执行3D自动标定 (C++加速)\n\n" \
               f"层数: {layers}\n" \
               f"底面: {params['base_width']}mm, 顶面: {params['top_width']}mm\n" \
-              f"高度: {params['height']}mm, 倾角: {params['tilt_angle']}°\n" \
+              f"高度: {params['height']}mm\n" \
               f"方向: {params.get('direction', 'Z+')}\n\n" \
               f"请确认周围无障碍物，机械臂将自动运行！"
 

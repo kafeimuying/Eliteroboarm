@@ -679,32 +679,77 @@ public:
         {
             int point_idx = i + 1;
             std::stringstream ss;
-            ss << "Moving to Point " << point_idx << " (" << (i + 1) << "/" << targets.size() << ")";
+            ss << "Processing Point " << point_idx << " (" << (i + 1) << "/" << targets.size() << ")";
             log(ss.str());
 
-            // Move to Target
+            // 1. Move to Base Point (Grid Position, Fixed Orientation)
             std::string script = "movel(" + vecToString(targets[i]) + ", a=" + std::to_string(MOVE_ACCEL) + ", v=" + std::to_string(MOVE_SPEED) + ")\n";
             primary->sendScript(script);
 
-            // Wait for completion
-            int timeout = 150; // 15 seconds max
+            // Wait for Base Arrival
+            int timeout = 200;
             while (timeout > 0)
             {
                 vector6d_t cur = get_current_pose_m_rad();
                 double dist_sq = 0;
                 for (int k = 0; k < 3; ++k)
                     dist_sq += std::pow(cur[k] - targets[i][k], 2);
-
-                // Check position convergence
                 if (std::sqrt(dist_sq) < 0.002)
+                    break;
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                timeout--;
+            }
+
+            // 2. Apply Dither (Adjust Rx/Ry/Rz slightly)
+            // Pattern: +Rx, -Rx, +Ry, -Ry, +Rz, -Rz
+            vector6d_t p_dither = targets[i];
+            double dither_mag = 5.0 / 57.29578; // 5 degrees
+            int mode = i % 6;
+            if (mode == 0)
+                p_dither[3] += dither_mag;
+            else if (mode == 1)
+                p_dither[3] -= dither_mag;
+            else if (mode == 2)
+                p_dither[4] += dither_mag;
+            else if (mode == 3)
+                p_dither[4] -= dither_mag;
+            else if (mode == 4)
+                p_dither[5] += dither_mag;
+            else if (mode == 5)
+                p_dither[5] -= dither_mag;
+
+            // Tiny Z shift to help MoveL interpolation
+            p_dither[2] += 0.0001;
+
+            log(" - Adjusting Orientation...");
+            std::string script_dither = "movel(" + vecToString(p_dither) + ", a=0.5, v=0.1)\n"; // Slower for adjustment
+            primary->sendScript(script_dither);
+
+            // Wait for Dither Arrival (Check Rotation too)
+            timeout = 50;
+            while (timeout > 0)
+            {
+                vector6d_t cur = get_current_pose_m_rad();
+                double dist_sq = 0;
+                // Check XYZ
+                for (int k = 0; k < 3; ++k)
+                    dist_sq += std::pow(cur[k] - p_dither[k], 2);
+                // Check Rot (approx)
+                double rot_sq = 0;
+                for (int k = 3; k < 6; ++k)
+                    rot_sq += std::pow(cur[k] - p_dither[k], 2);
+
+                if (std::sqrt(dist_sq) < 0.002 && std::sqrt(rot_sq) < 0.05)
                     break;
 
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
                 timeout--;
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(500)); // Stabilization
 
-            // Capture
+            // Stabilization before Capture
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+            // 3. Capture (At Dithered Pose)
             auto current_pose = get_current_pose_m_rad();
             std::stringstream data_ss;
             data_ss << point_idx << ", "
@@ -726,6 +771,24 @@ public:
                 {
                     log(std::string("Capture error: ") + e.what());
                 }
+            }
+
+            // 4. Restore to Base (Optional, but user requested "Restore")
+            log(" - Restoring...");
+            primary->sendScript(script); // Reuse base script
+
+            // Wait for Restore
+            timeout = 50;
+            while (timeout > 0)
+            {
+                vector6d_t cur = get_current_pose_m_rad();
+                double dist_sq = 0;
+                for (int k = 0; k < 3; ++k)
+                    dist_sq += std::pow(cur[k] - targets[i][k], 2);
+                if (std::sqrt(dist_sq) < 0.002)
+                    break;
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                timeout--;
             }
         }
 

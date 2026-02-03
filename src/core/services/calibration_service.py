@@ -150,10 +150,10 @@ class CalibrationService:
 
         # 在新线程中运行，避免阻塞UI
         import threading
-        base_width = params.get('base_width', 300.0)
-        top_width = params.get('top_width', 150.0)
-        height = params.get('height', 100.0)
-        tilt_angle = params.get('tilt_angle', 10.0)
+        base_width = params.get('base_width', 100.0)
+        top_width = params.get('top_width', 50.0)
+        height = params.get('height', 50.0)
+        tilt_angle = params.get('tilt_angle', 0.0)
         direction = params.get('direction', 'Z+')
 
         def run_thread():
