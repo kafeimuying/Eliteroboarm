@@ -56,6 +56,15 @@ class CalibrationService:
                 self._log("错误", f"自动拍照失败：相机未连接 (点 {point_idx})")
                 return
 
+            # 1.5 尝试自动对焦
+            self._log("信息", f"正在自动对焦 (点 {point_idx})...")
+            # 不阻塞太久，也不因为对焦失败而停止拍照(有些相机不支持)
+            af_result = self.camera_service.auto_focus()
+            if not af_result.get('success'):
+                # 仅记录警告，继续后续流程
+                if af_result.get('error') != 'Camera driver does not support auto-focus':
+                    self._log("警告", f"自动对焦失败: {af_result.get('error')}")
+
             # 2. 抓取图像
             self._log("信息", f"正在拍照 (点 {point_idx})...")
             frame = self.camera_service.capture_frame()

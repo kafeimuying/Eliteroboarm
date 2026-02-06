@@ -703,7 +703,7 @@ public:
             // 2. Apply Dither (Adjust Rx/Ry/Rz slightly)
             // Pattern: +Rx, -Rx, +Ry, -Ry, +Rz, -Rz
             vector6d_t p_dither = targets[i];
-            double dither_mag = 5.0 / 57.29578; // 5 degrees
+            double dither_mag = 3.0 / 57.29578; // 3 degrees
             int mode = i % 6;
             if (mode == 0)
                 p_dither[3] += dither_mag;
@@ -747,7 +747,7 @@ public:
             }
 
             // Stabilization before Capture
-            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            std::this_thread::sleep_for(std::chrono::milliseconds(1000));
 
             // 3. Capture (At Dithered Pose)
             auto current_pose = get_current_pose_m_rad();

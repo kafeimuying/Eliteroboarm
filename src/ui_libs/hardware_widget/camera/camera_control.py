@@ -527,6 +527,35 @@ class CameraControlTab(QWidget):
         """)
         control_layout.addWidget(capture_btn)
 
+        # 自动对焦
+        self.auto_focus_btn = QPushButton("🎯 自动对焦")
+        self.auto_focus_btn.clicked.connect(self.trigger_auto_focus)
+        self.auto_focus_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #FF9800;
+                color: white;
+                border: none;
+                padding: 8px 16px;
+                border-radius: 6px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #F57C00;
+                border: 1px solid #F57C00;
+            }
+            QPushButton:pressed {
+                background-color: #E65100;
+                border: 1px solid #E65100;
+            }
+            QPushButton:disabled {
+                background-color: #cccccc;
+                color: #666666;
+                border: 1px solid #cccccc;
+            }
+        """)
+        self.auto_focus_btn.setEnabled(False)
+        control_layout.addWidget(self.auto_focus_btn)
+
         # 相机切换
         camera_switch_btn = QPushButton("🔄 切换相机")
         camera_switch_btn.clicked.connect(self.switch_camera)
@@ -868,6 +897,8 @@ class CameraControlTab(QWidget):
                 # 连接成功后，更新右侧预览控制按钮状态
                 self.start_preview_btn.setEnabled(True)
                 self.stop_preview_btn.setEnabled(False)
+                if hasattr(self, 'auto_focus_btn'):
+                    self.auto_focus_btn.setEnabled(True)
                 self.preview_label.setText(f"✅ 已连接: {camera_info.name}")
 
                 # 获取相机信息（静默连接，不显示弹窗）
@@ -947,6 +978,60 @@ class CameraControlTab(QWidget):
                     self.camera_status_label.setText("🔴 连接异常")
 
         
+    def trigger_auto_focus(self):
+        """触发自动对焦"""
+        if not self.current_camera or not self.current_camera.connected:
+            QMessageBox.warning(self, "未连接", "请先连接相机")
+            return
+
+        camera_id = self.current_camera.camera_id
+        info(f"Triggering auto focus for camera: {camera_id}", "CAMERA_UI")
+        
+        try:
+            # 禁用按钮防止重复点击
+            if hasattr(self, 'auto_focus_btn'):
+                self.auto_focus_btn.setEnabled(False)
+                self.auto_focus_btn.setText("🎯 对焦中...")
+            QApplication.processEvents()
+
+            # 确定使用哪个 Service实例
+            # 优先检查streaming_services中的实例 (通常是当前活跃的连接)
+            service_to_use = None
+            if camera_id in self.streaming_services:
+                service_to_use = self.streaming_services[camera_id]
+            # 其次检查camera_services
+            elif camera_id in self.camera_services:
+                service_to_use = self.camera_services[camera_id]
+            # 最后使用默认service
+            if not service_to_use:
+                service_to_use = self.camera_service
+            
+            # 调用服务层对焦接口
+            if service_to_use:
+                result = service_to_use.auto_focus()
+                success = result.get('success', False)
+                message = result.get('message') or result.get('error', 'Unknown error')
+                
+                if success:
+                    info(f"Auto focus successful: {message}", "CAMERA_UI")
+                    self.preview_label.setText(f"✅ 自动对焦成功")
+                    QTimer.singleShot(2000, lambda: self.preview_label.setText(""))
+                else:
+                    warning(f"Auto focus failed: {message}", "CAMERA_UI")
+                    QMessageBox.warning(self, "对焦失败", f"自动对焦失败:\n{message}")
+            else:
+                warning("No camera service available for auto focus", "CAMERA_UI")
+                QMessageBox.warning(self, "错误", "无法获取相机服务")
+
+        except Exception as e:
+            error(f"Auto focus exception: {e}", "CAMERA_UI")
+            QMessageBox.warning(self, "错误", f"触发自动对焦时发生错误:\n{str(e)}")
+        finally:
+            # 恢复按钮状态
+            if hasattr(self, 'auto_focus_btn'):
+                self.auto_focus_btn.setEnabled(True)
+                self.auto_focus_btn.setText("🎯 自动对焦")
+
     def start_preview(self):
         """开始预览"""
         if not self.current_camera or not self.current_camera.connected:
@@ -1058,7 +1143,7 @@ class CameraControlTab(QWidget):
 
             if camera_info.current_frame is not None:
                 # 添加调试信息，确保是正确的相机
-                debug(f"处理来自相机 {camera_info.name} (ID: {camera_info.camera_id}) 的帧，帧大小: {camera_info.current_frame.shape}", "CAMERA_UI")
+                # debug(f"处理来自相机 {camera_info.name} (ID: {camera_info.camera_id}) 的帧，帧大小: {camera_info.current_frame.shape}", "CAMERA_UI")
                 # 更新帧数计数
                 if not hasattr(camera_info, 'frame_count'):
                     camera_info.frame_count = 0
@@ -1170,26 +1255,61 @@ class CameraControlTab(QWidget):
                 app_config = AppConfigManager()
                 captures_dir = app_config.get_captures_directory()
 
-                # 生成文件名
+                # 生成文件名（不包含中文）
                 from datetime import datetime
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                camera_name = self.current_camera.name.replace(" ", "_").replace("/", "_")
-                filename = f"{camera_name}_{timestamp}.jpg"
+                camera_id = self.current_camera.camera_id.replace(" ", "_").replace("/", "_")
+                filename = f"camera_{camera_id}_{timestamp}.jpg"
                 filepath = captures_dir / filename
 
                 # 保存图像 (转换为字符串路径给cv2.imwrite)
                 filepath_str = str(filepath)
                 success = cv2.imwrite(filepath_str, frame_array)
+                
+                # 如果是RealSense相机，同时保存深度图
+                depth_saved = False
+                depth_filepath_str = ""
+                if success and hasattr(self.current_camera.camera_driver, 'get_depth_frame'):
+                    try:
+                        from drivers.camera.realsense import RealSenseCamera
+                        if isinstance(self.current_camera.camera_driver, RealSenseCamera):
+                            depth_frame = self.current_camera.camera_driver.get_depth_frame()
+                            if depth_frame is not None:
+                                # 保存深度图（16位PNG格式）
+                                depth_filename = f"camera_{camera_id}_{timestamp}_depth.png"
+                                depth_filepath = captures_dir / depth_filename
+                                depth_filepath_str = str(depth_filepath)
+                                
+                                # 保存原始深度数据（16位）
+                                cv2.imwrite(depth_filepath_str, depth_frame)
+                                
+                                # 同时保存深度图可视化版本（伪彩色）
+                                depth_colormap = cv2.applyColorMap(
+                                    cv2.convertScaleAbs(depth_frame, alpha=0.03), 
+                                    cv2.COLORMAP_JET
+                                )
+                                depth_vis_filename = f"camera_{camera_id}_{timestamp}_depth_vis.jpg"
+                                depth_vis_filepath = captures_dir / depth_vis_filename
+                                cv2.imwrite(str(depth_vis_filepath), depth_colormap)
+                                
+                                depth_saved = True
+                                info(f"深度图已保存: {depth_filename}", "CAMERA_UI")
+                    except Exception as e:
+                        warning(f"保存深度图失败: {e}", "CAMERA_UI")
+                
                 if success:
                     # 获取图像信息
                     height, width = frame_array.shape[:2]
                     file_size = filepath.stat().st_size
 
                     info(f"拍照成功: {filename} ({width}x{height}, {file_size} bytes)", "CAMERA_UI")
-                    QMessageBox.information(self, "拍照成功",
-                        f"图像已保存到: {filepath_str}\n"
-                        f"分辨率: {width}x{height}\n"
-                        f"文件大小: {file_size} bytes")
+                    
+                    # 构建消息
+                    msg = f"彩色图像已保存到: {filepath_str}\n分辨率: {width}x{height}\n文件大小: {file_size} bytes"
+                    if depth_saved:
+                        msg += f"\n\n深度图已保存:\n- 原始数据: {depth_filepath_str}\n- 可视化图: {depth_filepath_str.replace('_depth.png', '_depth_vis.jpg')}"
+                    
+                    QMessageBox.information(self, "拍照成功", msg)
                 else:
                     error(f"保存图像失败: {filepath_str}", "CAMERA_UI")
                     QMessageBox.warning(self, "保存失败", f"无法保存图像到: {filepath_str}")
@@ -1251,7 +1371,7 @@ class CameraControlTab(QWidget):
                     target_camera_info.frame_count = target_camera_info.frame_count + 1 if hasattr(target_camera_info, 'frame_count') else 1
 
                     # 调试信息：确认回调来自正确的相机
-                    debug(f"回调更新 - 相机: {target_camera_info.name} (ID: {camera_id}), 帧数: {target_camera_info.frame_count}, 帧大小: {frame_array.shape if frame_array is not None else 'None'}", "CAMERA_UI")
+                    # debug(f"回调更新 - 相机: {target_camera_info.name} (ID: {camera_id}), 帧数: {target_camera_info.frame_count}, 帧大小: {frame_array.shape if frame_array is not None else 'None'}", "CAMERA_UI")
 
                     # 发送帧信号进行UI更新
                     self.on_frame_captured(target_camera_info)
@@ -1681,6 +1801,8 @@ class CameraControlTab(QWidget):
                 # 同步更新右侧预览控制按钮状态
                 self.start_preview_btn.setEnabled(False)
                 self.stop_preview_btn.setEnabled(False)
+                if hasattr(self, 'auto_focus_btn'):
+                    self.auto_focus_btn.setEnabled(False)
                 self.preview_label.setText("📹 选择相机开始预览")
                 self.preview_label.clear_preview()
 

@@ -20,6 +20,7 @@ from ui_libs.hardware_widget.camera.camera_preview import CameraPreviewThread, P
 from ui_libs.hardware_widget.camera.camera_control import CameraControlTab
 from ui_libs.hardware_widget.camera.save_path_dialog import SavePathDialog
 from ui_libs.hardware_widget.robotic_arm.robot_control import RobotControlTab
+from ui_libs.hardware_widget.robotic_arm.flexible_shooting_widget import FlexibleShootingWidget
 from ui_libs.hardware_widget.light.light_control import LightControlTab
 
 # 导入相机驱动
@@ -81,6 +82,10 @@ class HardwareManagementMainWindow(QMainWindow):
         # 硬件配置标签页
         self.config_tab = HardwareConfigTab()
         self.tab_widget.addTab(self.config_tab, "⚙️ 硬件配置")
+
+        # 柔性拍摄标签页
+        self.flexible_shooting_tab = FlexibleShootingWidget(self.robot_service, self.camera_service, self)
+        self.tab_widget.addTab(self.flexible_shooting_tab, "📷 柔性拍摄")
 
         main_layout.addWidget(self.tab_widget)
 

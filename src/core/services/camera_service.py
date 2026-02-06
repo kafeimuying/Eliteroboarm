@@ -3,7 +3,7 @@
 提供相机的高级业务逻辑和UI接口
 """
 
-from typing import Optional, Dict, Any, Callable
+from typing import Optional, Dict, Any, Callable, List
 import numpy as np
 from ..interfaces.hardware import ICamera
 from ..managers.log_manager import debug, info, warning, error
@@ -18,6 +18,22 @@ class CameraService:
 
         # 回调函数缓存
         self._frame_callback: Optional[Callable[[np.ndarray], None]] = None
+
+    def get_camera_list(self) -> List[Any]:
+        """获取所有可用相机列表"""
+        try:
+            from ..container import Container
+            
+            # 尝试从硬件管理器获取
+            if Container.is_registered("hardware_manager"):
+                hardware_manager = Container.resolve("hardware_manager")
+                cameras = hardware_manager.list_cameras()
+                return list(cameras.values())
+            
+            return []
+        except Exception as e:
+            error(f"Failed to get camera list: {e}", "CAMERA_SERVICE")
+            return []
 
     @staticmethod
     def get_camera_service(hardware_id: str) -> Optional['CameraService']:
@@ -122,8 +138,42 @@ class CameraService:
             error(f"Camera disconnection error: {e}")
             return {'success': False, 'error': str(e)}
 
-    def is_connected(self) -> bool:
+    def connect_camera(self, camera_id: str) -> Dict[str, Any]:
+        """连接指定ID的相机"""
+        try:
+            from ..container import Container
+            if Container.is_registered("hardware_manager"):
+                hardware_manager = Container.resolve("hardware_manager")
+                camera = hardware_manager.get_camera(camera_id)
+                
+                if not camera:
+                    return {'success': False, 'error': f"Camera {camera_id} not found"}
+                
+                self.set_camera(camera)
+                # 使用ID和名称作为基本配置进行连接
+                # 实际驱动可能需要完整配置，但如果是由HardwareManager初始化的，
+                # 它可能已经配置好了，或者我们可以从HardwareManager获取配置
+                connect_config = {'id': camera_id, 'name': camera_id}
+                
+                # 尝试从ConfigManager获取该相机的配置? 
+                # 这里简化处理，直接调用connect
+                return self.connect(connect_config)
+                
+            return {'success': False, 'error': "Hardware Manager not found"}
+        except Exception as e:
+            error(f"Failed to connect camera {camera_id}: {e}", "CAMERA_SERVICE")
+            return {'success': False, 'error': str(e)}
+
+    def is_connected(self, camera_id: str = None) -> bool:
         """检查连接状态"""
+        if camera_id:
+            from ..container import Container
+            if Container.is_registered("hardware_manager"):
+                hardware_manager = Container.resolve("hardware_manager")
+                camera = hardware_manager.get_camera(camera_id)
+                if camera:
+                    return camera.is_connected()
+                return False
         return self.camera is not None and self.camera.is_connected()
 
     def capture_frame(self) -> Optional[np.ndarray]:
@@ -144,6 +194,27 @@ class CameraService:
         except Exception as e:
             error(f"Frame capture error: {e}")
             return None
+
+    def auto_focus(self) -> Dict[str, Any]:
+        """
+        触发自动对焦
+        """
+        if not self.camera or not self.camera.is_connected():
+            return {'success': False, 'error': 'Camera not connected'}
+        
+        try:
+            # 检查相机驱动是否支持自动对焦
+            if hasattr(self.camera, 'auto_focus'):
+                success = self.camera.auto_focus()
+                if success:
+                    return {'success': True, 'message': 'Auto focus triggered'}
+                else:
+                    return {'success': False, 'error': 'Auto focus failed'}
+            else:
+                return {'success': False, 'error': 'Camera driver does not support auto-focus'}
+        except Exception as e:
+            error(f"Auto focus exception: {e}", "CAMERA_SERVICE")
+            return {'success': False, 'error': str(e)}
 
     def start_streaming(self, callback: Callable[[np.ndarray], None]) -> Dict[str, Any]:
         """开始视频流"""
@@ -269,6 +340,32 @@ class CameraService:
                 return {'success': False, 'error': 'Failed to trigger'}
         except Exception as e:
             error(f"Software trigger error: {e}")
+            return {'success': False, 'error': str(e)}
+
+    def auto_focus(self) -> Dict[str, Any]:
+        """执行自动对焦"""
+        if not self.camera:
+            return {'success': False, 'error': 'No camera instance available'}
+        
+        if not self.camera.is_connected():
+            return {'success': False, 'error': 'Camera not connected'}
+            
+        try:
+            # Check if underlying camera has auto_focus method
+            if hasattr(self.camera, 'auto_focus'):
+                info("Requesting auto-focus...")
+                success = self.camera.auto_focus()
+                if success:
+                    info("Auto-focus completed successfully")
+                    return {'success': True}
+                else:
+                    return {'success': False, 'error': 'Auto-focus returned failure'}
+            else:
+                return {'success': False, 'error': 'Camera driver does not support auto-focus'}
+        except Exception as e:
+            error(f"Auto-focus error: {e}")
+            return {'success': False, 'error': str(e)}
+
             return {'success': False, 'error': str(e)}
 
     def get_info(self) -> Optional[Dict[str, Any]]:

@@ -25,4 +25,13 @@ except ImportError as e:
         def __init__(self):
             raise ImportError("FlirCamera not available")
 
-__all__ = ['HikvisionCamera', 'DahengCamera', 'SimulationCamera', 'BaslerCamera', 'FlirCamera']
+# 尝试导入RealSense相机，如果失败则使用Mock
+try:
+    from .realsense import RealSenseCamera
+except ImportError as e:
+    warning(f"Could not import RealSenseCamera: {e}", "CAMERA_DRIVER")
+    class RealSenseCamera:
+        def __init__(self):
+            raise ImportError("RealSenseCamera not available")
+
+__all__ = ['HikvisionCamera', 'DahengCamera', 'SimulationCamera', 'BaslerCamera', 'FlirCamera', 'RealSenseCamera']

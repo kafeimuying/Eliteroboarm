@@ -201,7 +201,70 @@ class DahengCamera(ICamera):
             error(f"Failed to capture frame: {e}", "CAMERA_DRIVER")
             self.state = CameraState.ERROR
             return None
+    def auto_focus(self) -> bool:
+        """尝试执行自动对焦"""
+        if not self.is_connected():
+            return False
 
+        try:
+            # 尝试查找并设置对焦模式
+            # 常见的GenICam属性名可能是 FocusMode 或 FocusAuto
+            
+            success = False
+            
+            # 方案1: 尝试 FocusMode (0:Off, 1:Continuous, 2:Once)
+            if hasattr(self.cam, "FocusMode"):
+                try:
+                    # 尝试设置为 Once (通常是 2)
+                    self.cam.FocusMode.set(2)
+                    info("Triggered Auto Focus (FocusMode=2/Once)", "CAMERA_DRIVER")
+                    success = True
+                except Exception as e:
+                    warning(f"FocusMode=2 attempt failed: {str(e)}", "CAMERA_DRIVER")
+                    # 如果2失败，尝试1 (Continuous)
+                    try:
+                        self.cam.FocusMode.set(1)
+                        info("Triggered Auto Focus (FocusMode=1/Continuous)", "CAMERA_DRIVER")
+                        success = True
+                    except Exception as e2:
+                        warning(f"FocusMode=1 attempt failed: {str(e2)}", "CAMERA_DRIVER")
+
+            # 方案2: 尝试 FocusAuto (0:Off, 1:Once, 2:Continuous)
+            if not success and hasattr(self.cam, "FocusAuto"):
+                try:
+                    self.cam.FocusAuto.set(1)
+                    info("Triggered Auto Focus (FocusAuto=1/Once)", "CAMERA_DRIVER")
+                    success = True
+                except Exception as e:
+                    warning(f"FocusAuto=1 attempt failed: {str(e)}", "CAMERA_DRIVER")
+                    try:
+                        self.cam.FocusAuto.set(2)
+                        info("Triggered Auto Focus (FocusAuto=2/Continuous)", "CAMERA_DRIVER")
+                        success = True
+                    except Exception as e2:
+                         warning(f"FocusAuto=2 attempt failed: {str(e2)}", "CAMERA_DRIVER")
+            
+            # 方案3: 检查是否有执行命令的 FocusOnePush (常见于某些相机)
+            if not success and hasattr(self.cam, "FocusOnePush"):
+                 try:
+                    self.cam.FocusOnePush.send_command()
+                    info("Triggered Auto Focus (FocusOnePush command)", "CAMERA_DRIVER")
+                    success = True
+                 except Exception as e:
+                    warning(f"FocusOnePush attempt failed: {str(e)}", "CAMERA_DRIVER")
+
+            if success:
+                # 等待对焦完成 (简单延时)
+                time.sleep(1.5)
+                # 如果是 Continuous 模式，可能需要切回 Off? 暂时保留
+                return True
+            else:
+                warning(f"Camera {self.device_info.get('model_name', 'Unknown')} does not support standard auto-focus commands (FocusMode/FocusAuto). This is expected for cameras with manual lenses.", "CAMERA_DRIVER")
+                return False
+
+        except Exception as e:
+            error(f"Auto focus exception: {e}", "CAMERA_DRIVER")
+            return False
     def start_streaming(self, callback: Callable[[np.ndarray], None]) -> bool:
         """开始视频流"""
         if not self.is_connected():

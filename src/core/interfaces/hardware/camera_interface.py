@@ -52,6 +52,10 @@ class ICamera(ABC):
         """停止视频流"""
         pass
 
+    def auto_focus(self) -> bool:
+        """触发自动对焦 (可选实现)"""
+        return False
+
     @abstractmethod
     def is_streaming(self) -> bool:
         """检查是否正在流式传输"""

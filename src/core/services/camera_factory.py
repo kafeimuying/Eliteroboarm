@@ -76,6 +76,14 @@ class CameraFactory:
                     except ImportError as e:
                         error(f"Failed to import DahengCamera: {e}", "CAMERA_FACTORY")
                         return None
+                elif brand == 'realsense' or brand == 'intel':
+                    debug(f"Creating RealSense camera for {camera_name}", "CAMERA_FACTORY")
+                    try:
+                        from drivers.camera import RealSenseCamera
+                        return RealSenseCamera()
+                    except ImportError as e:
+                        error(f"Failed to import RealSenseCamera: {e}", "CAMERA_FACTORY")
+                        return None
                 else:
                     warning(f"Unsupported camera brand: {brand}", "CAMERA_FACTORY")
                     return None
@@ -89,10 +97,19 @@ class CameraFactory:
 
             elif connection_type == 'usb':
                 # USB相机
-                debug(f"Creating USB camera for {camera_name}", "CAMERA_FACTORY")
-                # TODO: 实现USB相机
-                warning(f"USB camera not yet implemented: {camera_name}", "CAMERA_FACTORY")
-                return None
+                if brand == 'realsense' or brand == 'intel':
+                    debug(f"Creating RealSense USB camera for {camera_name}", "CAMERA_FACTORY")
+                    try:
+                        from drivers.camera import RealSenseCamera
+                        return RealSenseCamera()
+                    except ImportError as e:
+                        error(f"Failed to import RealSenseCamera: {e}", "CAMERA_FACTORY")
+                        return None
+                else:
+                    debug(f"Creating USB camera for {camera_name}", "CAMERA_FACTORY")
+                    # TODO: 实现通用USB相机
+                    warning(f"Generic USB camera not yet implemented: {camera_name}", "CAMERA_FACTORY")
+                    return None
 
             else:
                 warning(f"Unsupported connection type: {connection_type} for camera {camera_name}", "CAMERA_FACTORY")
@@ -110,6 +127,10 @@ class CameraFactory:
             'hikvision': ['network', 'tcp'],
             'basler': ['network', 'tcp'],
             'flir': ['network', 'tcp'],
+            'daheng': ['network', 'tcp'],
+            'galaxy': ['network', 'tcp'],
+            'realsense': ['usb', 'network'],
+            'intel': ['usb', 'network'],
             'generic': ['rtsp', 'usb']
         }
 

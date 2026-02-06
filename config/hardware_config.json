@@ -91,6 +91,34 @@
       "original_type": "camera"
     },
     {
+      "id": "camera_realsense_01",
+      "name": "RealSense深度相机",
+      "type": "camera",
+      "brand": "realsense",
+      "model": "D435i",
+      "connection_type": "usb",
+      "is_simulation": false,
+      "resolution": "1280x720",
+      "timeout": 5,
+      "fps": 30,
+      "width": 1280,
+      "height": 720,
+      "enable_depth": true,
+      "depth_width": 1280,
+      "depth_height": 720,
+      "serial_number": "",
+      "connection_params": {
+        "width": 1280,
+        "height": 720,
+        "fps": 30,
+        "enable_depth": true,
+        "depth_width": 1280,
+        "depth_height": 720
+      },
+      "hardware_type": "相机",
+      "original_type": "camera"
+    },
+    {
       "brand": "hikvision",
       "connection_params": {
         "ip": "192.168.1.100",
