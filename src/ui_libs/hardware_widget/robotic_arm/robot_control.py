@@ -1350,6 +1350,15 @@ class RobotControlTab(QWidget):
         height_spin.setSuffix(" mm")
         size_layout.addWidget(height_spin, 2, 1)
         
+        # 向心倾斜角度
+        size_layout.addWidget(QLabel("向心倾斜角度:"), 3, 0)
+        tilt_angle_spin = QDoubleSpinBox()
+        tilt_angle_spin.setRange(0.0, 60.0)
+        tilt_angle_spin.setSingleStep(0.5)
+        tilt_angle_spin.setValue(10.0)
+        tilt_angle_spin.setSuffix(" °")
+        size_layout.addWidget(tilt_angle_spin, 3, 1)
+        
         # 标定方向
         size_layout.addWidget(QLabel("Generate Direction:"), 4, 0)
         direction_combo = QComboBox()
@@ -1374,7 +1383,7 @@ class RobotControlTab(QWidget):
                 "base_width": base_width_spin.value(),
                 "top_width": top_width_spin.value(),
                 "height": height_spin.value(),
-                # Tilt angle removed from UI
+                "tilt_angle": tilt_angle_spin.value(),
                 "direction": direction_combo.currentText()
             }
             self.execute_3d_calibration(layer_spin.value(), params)
@@ -1401,6 +1410,7 @@ class RobotControlTab(QWidget):
                 "base_width": 100.0,
                 "top_width": 50.0,
                 "height": 50.0,
+                "tilt_angle": 10.0,
                 "direction": "Z+"
             }
 
@@ -1408,6 +1418,7 @@ class RobotControlTab(QWidget):
               f"层数: {layers}\n" \
               f"底面: {params['base_width']}mm, 顶面: {params['top_width']}mm\n" \
               f"高度: {params['height']}mm\n" \
+              f"向心倾斜角度: {params.get('tilt_angle', 10.0)}°\n" \
               f"方向: {params.get('direction', 'Z+')}\n\n" \
               f"请确认周围无障碍物，机械臂将自动运行！"
 

@@ -630,11 +630,12 @@ public:
         }
 
         // Corner signs for [w1, w2]
+        // 修正遍历顺序：左下、左上、右上、右下
         double corner_signs[4][2] = {
-            {-1.0, -1.0},
-            {1.0, -1.0},
-            {1.0, 1.0},
-            {-1.0, 1.0}};
+            {-1.0, -1.0}, // corner 0: 左下
+            {-1.0, 1.0},  // corner 1: 左上（修正）
+            {1.0, 1.0},   // corner 2: 右上
+            {1.0, -1.0}}; // corner 3: 右下（修正）
 
         std::vector<vector6d_t> targets;
 
@@ -700,23 +701,32 @@ public:
                 timeout--;
             }
 
-            // 2. Apply Dither (Adjust Rx/Ry/Rz slightly)
-            // Pattern: +Rx, -Rx, +Ry, -Ry, +Rz, -Rz
+            // 2. Apply Inward Tilt (法兰盘向心倾斜)
+            // 计算当前点在金字塔中的位置
+            int layer_idx = i / 4;  // 哪一层 (0, 1, 2, ...)
+            int corner_idx = i % 4; // 哪个角 (0=左下, 1=右下, 2=右上, 3=左上)
+
             vector6d_t p_dither = targets[i];
-            double dither_mag = 3.0 / 57.29578; // 3 degrees
-            int mode = i % 6;
-            if (mode == 0)
-                p_dither[3] += dither_mag;
-            else if (mode == 1)
-                p_dither[3] -= dither_mag;
-            else if (mode == 2)
-                p_dither[4] += dither_mag;
-            else if (mode == 3)
-                p_dither[4] -= dither_mag;
-            else if (mode == 4)
-                p_dither[5] += dither_mag;
-            else if (mode == 5)
-                p_dither[5] -= dither_mag;
+
+            // 倾斜幅度：底层倾斜大，顶层倾斜小（因为顶层更接近中心）
+            double ratio = (layers > 1) ? (double)layer_idx / (double)(layers - 1) : 0.0;
+            double tilt_magnitude = (tilt_angle / 57.29578) * (1.0 - ratio * 0.6); // 使用UI设置的角度，顶层减少60%
+
+            // 获取角点在base平面的相对位置符号
+            double sign_w1 = corner_signs[corner_idx][0]; // -1 (左) or +1 (右)
+            double sign_w2 = corner_signs[corner_idx][1]; // -1 (下) or +1 (上)
+
+            // 向心倾斜逻辑：
+            // - w1方向 (X轴): 影响 ax_r2 (RY旋转)
+            // - w2方向 (Y轴): 影响 ax_r1 (RX旋转)
+            // 符号规则：负方向的点需要正向倾斜才能指向中心
+            // 修正：corner 1和3需要反向倾斜
+            double sign_modifier = (corner_idx == 1 || corner_idx == 3) ? -1.0 : 1.0;
+            p_dither[ax_r1] += -sign_w2 * tilt_magnitude * sign_modifier; // Y轴位置影响RX倾斜
+            p_dither[ax_r2] += -sign_w1 * tilt_magnitude * sign_modifier; // X轴位置影响RY倾斜
+
+            // 添加微小RZ扰动以增加姿态多样性（可选）
+            p_dither[ax_r2 + 1] += (corner_idx % 2 == 0 ? 2.0 : -2.0) * (1.0 / 57.29578); // ±2度RZ扰动
 
             // Tiny Z shift to help MoveL interpolation
             p_dither[2] += 0.0001;
@@ -746,8 +756,8 @@ public:
                 timeout--;
             }
 
-            // Stabilization before Capture
-            std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+            // Stabilization before Capture (统一1.5秒)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1500));
 
             // 3. Capture (At Dithered Pose)
             auto current_pose = get_current_pose_m_rad();
