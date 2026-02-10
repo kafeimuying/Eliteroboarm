@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
     QStackedWidget, QMenu, QInputDialog, QSizePolicy
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QThread, pyqtSlot, QObject, QMetaObject
-from PyQt6.QtGui import QImage, QPixmap, QFont, QColor
+from PyQt6.QtGui import QImage, QPixmap, QFont, QColor, QBrush
 from core.managers.log_manager import info, debug, warning, error, LogCategory
 from core import RobotService, CameraService, CalibrationService
 from core.interfaces.hardware import RobotState, MotionMode, RobotPosition, PathPoint, RobotPath
@@ -1514,9 +1514,9 @@ class RobotControlTab(QWidget):
         try:
             new_position = self.robot_service.get_position()
             if new_position and len(new_position) >= 6:
-                new_pos_str = f"({new_position[0]:.1f}, {new_position[1]:.1f}, {new_position[2]:.1f}, {new_position[3]:.1f}, {new_position[4]:.1f}, {new_position[5]:.1f})"
+                new_pos_str = f"({new_position[0]:.3f}, {new_position[1]:.3f}, {new_position[2]:.3f}, {new_position[3]:.3f}, {new_position[4]:.3f}, {new_position[5]:.3f})"
             elif new_position and len(new_position) >= 3:
-                new_pos_str = f"({new_position[0]:.1f}, {new_position[1]:.1f}, {new_position[2]:.1f})"
+                new_pos_str = f"({new_position[0]:.3f}, {new_position[1]:.3f}, {new_position[2]:.3f})"
             else:
                 new_pos_str = "未知"
 
@@ -1870,7 +1870,7 @@ class RobotControlTab(QWidget):
             try:
                 current_pos = self.robot_service.get_position()
                 if current_pos and len(current_pos) >= 6:
-                    pos_str = f"({current_pos[0]:.1f}, {current_pos[1]:.1f}, {current_pos[2]:.1f}, {current_pos[3]:.1f}, {current_pos[4]:.1f}, {current_pos[5]:.1f})"
+                    pos_str = f"({current_pos[0]:.3f}, {current_pos[1]:.3f}, {current_pos[2]:.3f}, {current_pos[3]:.3f}, {current_pos[4]:.3f}, {current_pos[5]:.3f})"
                     self.add_robot_log("路径", f"路径点已添加，当前位置: {pos_str}")
                 elif current_pos and len(current_pos) >= 3:
                     pos_str = f"({current_pos[0]:.1f}, {current_pos[1]:.1f}, {current_pos[2]:.1f})"
@@ -1977,6 +1977,8 @@ class RobotControlTab(QWidget):
                     name_text = "🎯 " + name_text  # 当前路径添加标记
                 name_item = QTableWidgetItem(name_text)
                 name_item.setToolTip("当前正在记录/已记录的路径" if path_data['is_current'] else "已加载的路径")
+                # Store path object in item data for easy retrieval
+                name_item.setData(Qt.ItemDataRole.UserRole, path)
                 self.path_table.setItem(row, 0, name_item)
 
                 # 点数
@@ -1998,7 +2000,10 @@ class RobotControlTab(QWidget):
                 # 状态
                 status_item = QTableWidgetItem(path_data['status'])
                 if path_data['is_recording']:
-                    status_item.setStyleSheet("color: red; font-weight: bold;")
+                    font = status_item.font()
+                    font.setBold(True)
+                    status_item.setFont(font)
+                    status_item.setForeground(QBrush(QColor("red")))
                 self.path_table.setItem(row, 4, status_item)
 
                 # 操作按钮
@@ -2140,8 +2145,11 @@ class RobotControlTab(QWidget):
                         self.current_path_label.setText(
                             f"📄 {status_text}路径: {path.name} ({len(path.points)}点) {path_data['status']}"
                         )
+                        # 启用播放按钮
+                        self.play_btn.setEnabled(True)
                     else:
                         self.current_path_label.setText("📄 无路径加载")
+                        self.play_btn.setEnabled(False)
             else:
                 # 多选
                 self.current_path_label.setText(f"📄 已选中 {len(selected_rows)} 个路径")
@@ -2725,8 +2733,21 @@ class RobotControlTab(QWidget):
 
     def play_path(self):
         """播放路径"""
-        if not self.recorded_path:
-            QMessageBox.warning(self, "无路径", "请先加载路径")
+        # 优先使用列表中选中的路径
+        target_path = None
+        selected_rows = self.path_table.selectionModel().selectedRows()
+        if selected_rows:
+            row = selected_rows[0].row()
+            item = self.path_table.item(row, 0)
+            if item:
+                target_path = item.data(Qt.ItemDataRole.UserRole)
+        
+        # 如果没有选中，尝试使用当前记录的路径
+        if not target_path:
+            target_path = self.recorded_path
+
+        if not target_path:
+            QMessageBox.warning(self, "无路径", "请先选择或加载路径")
             return
 
         if not self.robot_service.is_connected():
@@ -2734,13 +2755,14 @@ class RobotControlTab(QWidget):
             return
 
         loop_count = self.loop_spinbox.value()
-        result = self.robot_service.play_path(self.recorded_path, loop_count)
+        result = self.robot_service.play_path(target_path, loop_count)
         if result['success']:
             self.is_playing_path = True
             self.play_btn.setEnabled(False)
             self.stop_btn.setEnabled(True)
-            self.current_path_label.setText(f"🔄 正在播放: {self.recorded_path.name}")
-            QMessageBox.information(self, "播放开始", f"开始播放路径 '{self.recorded_path.name}'")
+            self.current_path_label.setText(f"🔄 正在播放: {target_path.name}")
+            self.add_robot_log("信息", f"开始播放路径 '{target_path.name}'")
+            QMessageBox.information(self, "播放开始", f"开始播放路径 '{target_path.name}'")
         else:
             warning(f"路径播放失败: {result.get('error')}", "ROBOT_UI")
 

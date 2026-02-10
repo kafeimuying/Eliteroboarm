@@ -78,6 +78,18 @@ class EliteRobot(IRobot):
         
         # C++ Extension Controller
         self.controller = None
+        
+        # 路径记录
+        self.current_recording_path = None
+        self.is_recording = False
+        self.is_playing = False
+        self._playback_stop_event = threading.Event()
+        
+        # 路径记录
+        self.current_recording_path = None
+        self.is_recording = False
+        self.is_playing = False
+        self._playback_stop_event = threading.Event()
         self.calibration_controller = None
         if CPP_EXT_AVAILABLE:
             try:
@@ -1103,35 +1115,183 @@ class EliteRobot(IRobot):
     # ========== 路径记录相关方法 ==========
     def start_path_recording(self, path_name: str) -> bool:
         """开始记录路径"""
+        import time
+        from core.interfaces.hardware import RobotPath
+        
+        self.current_recording_path = RobotPath(
+            name=path_name,
+            points=[],
+            created_time=time.time(),
+            description="Created by Elite Robot Driver",
+            id=f"path_{int(time.time())}"
+        )
+        self.is_recording = True
+        info(f"Started recording path: {path_name}", "ROBOT_DRIVER")
         return True
 
     def stop_path_recording(self) -> bool:
         """停止记录路径"""
+        self.is_recording = False
+        info("Stopped recording path", "ROBOT_DRIVER")
         return True
 
     def add_path_point(self, point: Optional[PathPoint] = None) -> bool:
         """添加路径点"""
+        if not self.is_recording or not self.current_recording_path:
+            error("Cannot add point: Not recording", "ROBOT_DRIVER")
+            return False
+
+        if point is None:
+            # 获取当前位置
+            current_pos = self.get_position()
+            if not current_pos:
+                error("Cannot add point: Failed to get current position", "ROBOT_DRIVER")
+                return False
+                
+            from core.interfaces.hardware import RobotPosition, PathPoint
+            import time
+            
+            # current_pos is (x, y, z, rx, ry, rz)
+            pos_obj = RobotPosition(
+                x=current_pos[0],
+                y=current_pos[1],
+                z=current_pos[2],
+                rx=current_pos[3],
+                ry=current_pos[4],
+                rz=current_pos[5],
+                timestamp=time.time()
+            )
+            
+            point = PathPoint(
+                position=pos_obj,
+                speed=50.0, # Default speed
+                delay=0.0,
+                action=""
+            )
+
+        self.current_recording_path.points.append(point)
+        info(f"Added point to path (total {len(self.current_recording_path.points)})", "ROBOT_DRIVER")
         return True
 
     def get_recorded_path(self) -> Optional[RobotPath]:
         """获取当前记录的路径"""
-        return None
+        return self.current_recording_path
 
     def clear_recorded_path(self) -> bool:
         """清空当前记录的路径"""
+        self.current_recording_path = None
+        self.is_recording = False
         return True
 
     def play_path(self, path: RobotPath, loop_count: int = 1) -> bool:
-        """播放路径"""
+        """播放路径 (简单的逐点运动)"""
+        if not path or not path.points:
+            return False
+            
+        self.is_playing = True
+        self._playback_stop_event.clear()
+        
+        def _playback_thread():
+            info(f"Starting playback of path: {path.name}", "ROBOT_DRIVER")
+            try:
+                for loop in range(loop_count):
+                    if self._playback_stop_event.is_set():
+                        break
+                        
+                    info(f"Path playback loop {loop+1}/{loop_count}", "ROBOT_DRIVER")
+                    
+                    for i, point in enumerate(path.points):
+                        if self._playback_stop_event.is_set():
+                            break
+                            
+                        # 获取点位
+                        pos = point.position
+                        speed = point.speed
+                        
+                        info(f"Playing point {i+1}: ({pos.x:.1f}, {pos.y:.1f}, {pos.z:.1f}) at {speed}%", "ROBOT_DRIVER")
+                        
+                        # 设置速度 (如果支持动态设置)
+                        self.set_speed(speed)
+                        
+                        # 移动
+                        # 注意：此处使用 move_linear (movel) 还是 PTP (movej) 取决于需求
+                        # 这里默认使用 move_to (通常是 movel 封装)
+                        success = self.move_to(
+                            pos.x, pos.y, pos.z,
+                            pos.rx, pos.ry, pos.rz
+                        )
+                        
+                        if not success:
+                            error(f"Failed to move to point {i+1}", "ROBOT_DRIVER")
+                            break
+
+                        # 等待到达目标点 (简单的位置检查)
+                        timeout_sec = 30.0
+                        start_wait = time.time()
+                        arrived = False
+                        
+                        while not self._playback_stop_event.is_set():
+                            curr = self.get_position()
+                            if curr:
+                                # 计算欧几里得距离 (仅位置 X,Y,Z)
+                                dx = curr[0] - pos.x
+                                dy = curr[1] - pos.y
+                                dz = curr[2] - pos.z
+                                dist = math.sqrt(dx*dx + dy*dy + dz*dz)
+                                
+                                # 计算角度差异 (简单估算)
+                                # 注意：这里简单取绝对值差，未处理 ±180 度跳变情况，但在小范围运动中通常有效
+                                drx = abs(curr[3] - pos.rx)
+                                dry = abs(curr[4] - pos.ry)
+                                drz = abs(curr[5] - pos.rz)
+                                
+                                # 角度误差修正 (处理 179 <-> -179 的情况)
+                                if drx > 180: drx = 360 - drx
+                                if dry > 180: dry = 360 - dry
+                                if drz > 180: drz = 360 - drz
+                                
+                                ang_dist = max(drx, dry, drz)
+
+                                # 判定到达阈值: 位置 < 5mm 且 角度 < 5度
+                                if dist < 5.0 and ang_dist < 5.0:
+                                    arrived = True
+                                    break
+                            
+                            if time.time() - start_wait > timeout_sec:
+                                warning(f"Timeout waiting for reach point {i+1}", "ROBOT_DRIVER")
+                                break
+                                
+                            time.sleep(0.1)
+                        
+                        if self._playback_stop_event.is_set():
+                            break
+                            
+                        # 延迟
+                        if point.delay > 0:
+                            time.sleep(point.delay / 1000.0)
+                            
+                info("Path playback finished", "ROBOT_DRIVER")
+            except Exception as e:
+                error(f"Playback error: {e}", "ROBOT_DRIVER")
+            finally:
+                self.is_playing = False
+        
+        # 在新线程中运行播放，不阻塞UI
+        threading.Thread(target=_playback_thread, daemon=True).start()
         return True
 
     def stop_path_playback(self) -> bool:
         """停止路径播放"""
+        if self.is_playing:
+            self._playback_stop_event.set()
+            # 也可以发送停止指令给机器人
+            self.emergency_stop() # 或者 stopj
+            info("Path playback stop requested", "ROBOT_DRIVER")
         return True
 
     def is_path_playing(self) -> bool:
         """检查是否正在播放路径"""
-        return False
+        return self.is_playing
 
     # ========== 高级控制功能 ==========
     def move_linear(self, start_pos: RobotPosition, end_pos: RobotPosition, speed: float) -> bool:
