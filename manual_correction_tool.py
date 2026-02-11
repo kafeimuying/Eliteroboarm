@@ -72,54 +72,63 @@ def matrix_to_elite_pose(matrix, is_degree=True):
 def calculate_correction(current_pose, deviation, hand_eye_matrix, is_degree=True):
     """
     核心算法：计算纠偏后的目标位姿
+    
+    使用完整齐次矩阵链处理旋转-平移耦合：
+      T_B_F_new = T_B_F_cur @ T_F_C @ T_dev @ T_F_C_inv
+    
+    重要数学背景：
+    ─────────────────────────────────────────────
+    scipy from_euler('xyz', [rx,ry,rz]) 产生矩阵: R = Rz(rz) · Ry(ry) · Rx(rx)
+    
+    这意味着：
+    - 修改 RX → 绕工具/body X轴旋转 (rightmost, post-multiply)
+    - 修改 RZ → 绕基座/space Z轴旋转 (leftmost, pre-multiply)
+    - 绕工具Z轴旋转 = post-multiply Rz(d) = 需要同时改变 RX/RY/RZ 三个角
+    
+    当 RY ≈ ±90° 时处于万向节锁区域，小的物理旋转会导致
+    RX/RZ 值出现大幅变化。这是数学表示的固有特性，不是计算错误。
+    机器人控制器内部会正确还原旋转矩阵，运动是平滑的。
+    ─────────────────────────────────────────────
     """
     dx, dy, dtheta_deg = deviation
     
     # 1. 构造偏差矩阵 T_dev (相机坐标系下的移动)
-    # 假设相机坐标系：Z轴向前，X轴向右，Y轴向下
-    # 图像平面的旋转是绕相机Z轴旋转
     dtheta_rad = math.radians(dtheta_deg)
-    
     cos_t = math.cos(dtheta_rad)
     sin_t = math.sin(dtheta_rad)
     
     T_dev = np.eye(4)
-    # 绕Z轴旋转
+    # 绕相机Z轴旋转
     T_dev[0, 0] = cos_t
     T_dev[0, 1] = -sin_t
     T_dev[1, 0] = sin_t
     T_dev[1, 1] = cos_t
-    
-    # 平移
+    # 平移 (相机XY平面)
     T_dev[0, 3] = dx
     T_dev[1, 3] = dy
     
-    # 2. 获取当前 T_Base_Flange (支持度数输入)
-    T_B_F_curr = elite_pose_to_matrix(current_pose, is_degree=is_degree)
-    
-    # 3. 计算链
-    # T_Base_Flange_New = T_Base_Flange_Curr * T_Flange_Cam * T_Cam_Dev * T_Flange_Cam_Inv
+    # 2. 完整矩阵链 (正确处理旋转与平移的耦合效应)
+    # 物理含义：相机需要在自身坐标系移动 T_dev，
+    # 通过手眼标定转换为法兰运动
+    T_B_F_cur = elite_pose_to_matrix(current_pose, is_degree=is_degree)
     T_F_C = hand_eye_matrix
     T_F_C_inv = np.linalg.inv(T_F_C)
     
-    T_B_F_new = T_B_F_curr @ T_F_C @ T_dev @ T_F_C_inv
+    T_B_F_new = T_B_F_cur @ T_F_C @ T_dev @ T_F_C_inv
     
-    # 4. 转回向量
+    # 3. 提取新位姿 (Euler分解)
     new_pose_vec = matrix_to_elite_pose(T_B_F_new, is_degree=is_degree)
     
-    # 5. 【新增逻辑】强制高度固定和平面约束
-    # 用户指出：此机械臂“竖直向下”对应基座坐标系的 X+ 方向。
-    # 因此，“高度”是 X 轴，工作平面是 Y-Z 平面。
+    # 4. 约束：锁定高度 (X轴 = 此机器人的竖直方向)
+    # 矩阵链可能在X方向产生小量偏移(~2mm)来自旋转耦合，
+    # 为保持安全高度，锁定X不变
+    new_pose_vec[0] = current_pose[0]
     
-    # 锁定高度 (X轴)，允许 Y, Z 变化
-    new_pose_vec[0] = current_pose[0]  # 之前是 lock Z ([2])，现在改为 lock X ([0])
-    
-    # 锁定倾斜角，只允许“滚转”以修正图像旋转
-    # 假设：如果工具指向 X+，则图像旋转对应绕 X 轴的旋转 (RX)。
-    # 因此，我们允许 RX 变化，锁定 RY 和 RZ (防止点头/摇头)
-    new_pose_vec[4] = current_pose[4] # Lock RY
-    new_pose_vec[5] = current_pose[5] # Lock RZ
-    # new_pose_vec[3] (RX) 允许变化，用于修正角度偏差
+    # 注意：不锁定任何旋转角 (RX/RY/RZ)！
+    # 在 R = Rz(rz)·Ry(ry)·Rx(rx) 约定下，绕工具Z旋转需要
+    # 三个Euler角同时变化。锁定任一角度都会破坏正确姿态。
+    # 在 RY ≈ -90° 区域，RX和RZ会出现"大"变化(±10°级别)，
+    # 这是万向节锁附近的正常现象，不影响物理运动的正确性。
     
     return new_pose_vec
 
