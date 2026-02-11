@@ -1,5 +1,6 @@
 from typing import Dict, Any, Optional, List
 import time
+import math
 import os
 import json
 import importlib
@@ -520,22 +521,53 @@ class RobotControlTab(QWidget):
         linear_group.setLayout(linear_inner_layout)
 
         # 旋转位置组 (RX, RY, RZ)
-        rotation_group = QGroupBox("旋转位置 (°)")
+        rotation_group = QGroupBox("旋转位置")
+        # 增加一些样式以解决标题遮挡问题
+        rotation_group.setStyleSheet("""
+            QGroupBox {
+                margin-top: 10px;
+                padding-top: 10px;
+                font-weight: bold;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                subcontrol-position: top left;
+                padding: 0 3px;
+            }
+        """)
+        
         rotation_inner_layout = QGridLayout()
+        # 增加内边距和间距
+        rotation_inner_layout.setContentsMargins(10, 25, 10, 10) 
+        rotation_inner_layout.setVerticalSpacing(10)
+        rotation_inner_layout.setHorizontalSpacing(10)
+        
+        # 单位选择 - 放在第一行，为了美观，我们可以加一个专门的容器或者直接布局
+        unit_container = QHBoxLayout()
+        unit_container.addWidget(QLabel("旋转单位:"))
+        self.rotation_unit_combo = QComboBox()
+        self.rotation_unit_combo.addItems(["°", "rad"])
+        self.rotation_unit_combo.setMinimumWidth(70)
+        self.rotation_unit_combo.currentTextChanged.connect(self.on_rotation_unit_changed)
+        unit_container.addWidget(self.rotation_unit_combo)
+        unit_container.addStretch() # 向左对齐
+        
+        # 将单位选择行添加到 Grid 的第一行，跨越 3 列
+        rotation_inner_layout.addLayout(unit_container, 0, 0, 1, 3)
 
         rotation_controls = [
-            ("RX:", 0, 0), ("RY:", 0, 1), ("RZ:", 0, 2)
+            ("RX:", 1, 0), ("RY:", 1, 1), ("RZ:", 1, 2)
         ]
 
         for label, row, col in rotation_controls:
             # 添加标签
             label_widget = QLabel(label)
-            label_widget.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignCenter)
+            label_widget.setAlignment(Qt.AlignmentFlag.AlignCenter)
             rotation_inner_layout.addWidget(label_widget, row, col)
 
             # 添加输入框
             spinbox = QDoubleSpinBox()
-            spinbox.setRange(-180, 180)
+            spinbox.setRange(-360, 360) # 扩大范围
             spinbox.setSuffix(" °")
             spinbox.setDecimals(1)
             spinbox.setValue(0.0)
@@ -718,6 +750,33 @@ class RobotControlTab(QWidget):
         if not result['success']:
             warning(f"设置运动模式失败: {result.get('error')}", "ROBOT_UI", LogCategory.HARDWARE)
 
+    def on_rotation_unit_changed(self, unit_text):
+        """旋转单位改变"""
+        is_rad = (unit_text == "rad")
+        
+        # 更新SpinBox属性
+        spinboxes = [self.rx_spinbox, self.ry_spinbox, self.rz_spinbox]
+        
+        # 临时断开信号连接（如果有的话），这里主要是单位转换显示
+        for sb in spinboxes:
+            val = sb.value()
+            if is_rad:
+                # Degree -> Radian
+                new_val = val * (math.pi / 180.0)
+                sb.setSuffix(" rad")
+                sb.setDecimals(3)
+                sb.setRange(-7.0, 7.0) # approx -2pi to 2pi
+            else:
+                # Radian -> Degree
+                new_val = val * (180.0 / math.pi)
+                sb.setSuffix(" °")
+                sb.setDecimals(1)
+                sb.setRange(-360.0, 360.0)
+            
+            sb.setValue(new_val)
+            
+        info(f"旋转单位切换为: {unit_text}", "ROBOT_UI")
+
     def read_current_position(self):
         """读取当前位置"""
         if not self.robot_service.is_connected():
@@ -734,15 +793,27 @@ class RobotControlTab(QWidget):
             if position and len(position) >= 6:
                 x, y, z, rx, ry, rz = position[:6]
 
+                # 检查当前单位
+                unit = self.rotation_unit_combo.currentText()
+                is_rad = (unit == "rad")
+
+                # 如果选择弧度，进行转换 (原始数据是角度)
+                rx_disp = rx * (math.pi / 180.0) if is_rad else rx
+                ry_disp = ry * (math.pi / 180.0) if is_rad else ry
+                rz_disp = rz * (math.pi / 180.0) if is_rad else rz
+
                 # 更新输入框显示当前值
                 self.x_spinbox.setValue(float(x))
                 self.y_spinbox.setValue(float(y))
                 self.z_spinbox.setValue(float(z))
-                self.rx_spinbox.setValue(float(rx))
-                self.ry_spinbox.setValue(float(ry))
-                self.rz_spinbox.setValue(float(rz))
+                self.rx_spinbox.setValue(float(rx_disp))
+                self.ry_spinbox.setValue(float(ry_disp))
+                self.rz_spinbox.setValue(float(rz_disp))
 
-                position_info = f"当前位置: ({x:.1f}, {y:.1f}, {z:.1f}, {rx:.1f}, {ry:.1f}, {rz:.1f})"
+                unit_suffix = "rad" if is_rad else "°"
+                format_str = ".3f" if is_rad else ".1f"
+                
+                position_info = f"当前位置: ({x:.1f}, {y:.1f}, {z:.1f}, {rx_disp:{format_str}}, {ry_disp:{format_str}}, {rz_disp:{format_str}})"
                 info(f"{position_info}", "ROBOT_UI")
                 self.add_robot_log("信息", position_info)
                 self.add_robot_log("运动", f"位置读取完成并更新到输入框: {position_info}")
@@ -750,7 +821,7 @@ class RobotControlTab(QWidget):
                 QMessageBox.information(self, "读取成功",
                     f"当前位置已读取并更新到输入框：\n"
                     f"X: {x:.1f}mm, Y: {y:.1f}mm, Z: {z:.1f}mm\n"
-                    f"RX: {rx:.1f}°, RY: {ry:.1f}°, RZ: {rz:.1f}°")
+                    f"RX: {rx_disp:{format_str}}{unit_suffix}, RY: {ry_disp:{format_str}}{unit_suffix}, RZ: {rz_disp:{format_str}}{unit_suffix}")
 
             elif position and len(position) >= 3:
                 x, y, z = position[:3]
@@ -1058,22 +1129,6 @@ class RobotControlTab(QWidget):
         """创建实时信息面板"""
         group = QGroupBox("实时信息")
         layout = QVBoxLayout()
-
-        # 运动信息
-        motion_info = QGroupBox("运动状态")
-        motion_layout = QFormLayout()
-
-        self.motion_state_label = QLabel("未知")
-        motion_layout.addRow("当前状态:", self.motion_state_label)
-
-        self.is_moving_label = QLabel("否")
-        motion_layout.addRow("正在移动:", self.is_moving_label)
-
-        self.motion_mode_label = QLabel("未知")
-        motion_layout.addRow("运动模式:", self.motion_mode_label)
-
-        motion_info.setLayout(motion_layout)
-        layout.addWidget(motion_info)
 
         # 连接信息
         connection_info = QGroupBox("连接信息")
@@ -1560,17 +1615,29 @@ class RobotControlTab(QWidget):
         rz = self.rz_spinbox.value()
         speed = self.speed_slider.value()
 
-        # 构建位置移动命令
-        position_command = {
-            'position': [x, y, z, rx, ry, rz],
-            'speed_percent': speed
-        }
+        # 检查单位并转换
+        unit = self.rotation_unit_combo.currentText()
+        is_rad = (unit == "rad")
+
+        # 驱动层总是使用角度
+        if is_rad:
+            rx_cmd = rx * (180.0 / math.pi)
+            ry_cmd = ry * (180.0 / math.pi)
+            rz_cmd = rz * (180.0 / math.pi)
+        else:
+            rx_cmd, ry_cmd, rz_cmd = rx, ry, rz
+
+        # 格式化显示的字符串
+        unit_suffix = "rad" if is_rad else "°"
+        format_str = ".3f" if is_rad else ".1f"
+        target_pos_str = f"({x:.1f}, {y:.1f}, {z:.1f}, {rx:{format_str}}{unit_suffix}, {ry:{format_str}}{unit_suffix}, {rz:{format_str}}{unit_suffix})"
 
         # 记录当前位置（从service层获取）
         try:
             current_pos = self.robot_service.get_position()
             if current_pos and len(current_pos) >= 6:
-                current_pos_str = f"({current_pos[0]:.1f}, {current_pos[1]:.1f}, {current_pos[2]:.1f}, {current_pos[3]:.1f}, {current_pos[4]:.1f}, {current_pos[5]:.1f})"
+                # 简单记录，不做单位转换显示
+                current_pos_str = f"({current_pos[0]:.1f}, {current_pos[1]:.1f}, {current_pos[2]:.1f}, ...)"
             elif current_pos and len(current_pos) >= 3:
                 current_pos_str = f"({current_pos[0]:.1f}, {current_pos[1]:.1f}, {current_pos[2]:.1f}, -, -, -)"
             else:
@@ -1579,15 +1646,13 @@ class RobotControlTab(QWidget):
             warning(f"获取当前位置失败: {pos_error}", "ROBOT_UI")
             current_pos_str = "获取失败"
 
-        target_pos_str = f"({x:.1f}, {y:.1f}, {z:.1f}, {rx:.1f}, {ry:.1f}, {rz:.1f})"
-
         # 记录移动日志
         movement_info = f"开始位置移动: {current_pos_str} → {target_pos_str}, 速度: {speed}%"
         info(movement_info, "ROBOT_UI", LogCategory.HARDWARE)
         self.add_robot_log("运动", movement_info)
 
-        # 实际调用service层的move_to方法
-        result = self.robot_service.move_to(x, y, z, rx, ry, rz)
+        # 实际调用service层的move_to方法 (传入角度)
+        result = self.robot_service.move_to(x, y, z, rx_cmd, ry_cmd, rz_cmd)
 
         if result['success']:
             self.add_robot_log("运动", f"位置移动命令发送成功: 目标位置{target_pos_str}，速度{speed}%")
@@ -2814,7 +2879,23 @@ class RobotControlTab(QWidget):
             try:
                 position = self.robot_service.get_position()
                 if position and len(position) >= 6:
-                    self.position_status.setText(f"位置: ({position[0]:.1f}, {position[1]:.1f}, {position[2]:.1f}, {position[3]:.1f}, {position[4]:.1f}, {position[5]:.1f})")
+                    x, y, z, rx, ry, rz = position[:6]
+                    
+                    # 检查单位并转换
+                    unit_combo = getattr(self, 'rotation_unit_combo', None)
+                    is_rad = False
+                    if unit_combo and unit_combo.currentText() == "rad":
+                        is_rad = True
+                    
+                    if is_rad:
+                        rx = rx * (math.pi / 180.0)
+                        ry = ry * (math.pi / 180.0)
+                        rz = rz * (math.pi / 180.0)
+                        format_str = ".3f"
+                    else:
+                        format_str = ".1f"
+                        
+                    self.position_status.setText(f"位置: ({x:.1f}, {y:.1f}, {z:.1f}, {rx:{format_str}}, {ry:{format_str}}, {rz:{format_str}})")
                 elif position and len(position) >= 3:
                     self.position_status.setText(f"位置: ({position[0]:.1f}, {position[1]:.1f}, {position[2]:.1f}, -, -, -)")
                 else:
@@ -2830,22 +2911,6 @@ class RobotControlTab(QWidget):
             except Exception as state_error:
                 warning(f"获取状态失败: {state_error}", "ROBOT_UI")
                 self.state_status.setText("状态: 获取失败")
-
-            # 获取运动模式 - 从service层获取
-            try:
-                mode = self.robot_service.get_motion_mode()
-                self.motion_mode_label.setText(mode.value if mode else "未知")
-            except Exception as mode_error:
-                warning(f"获取运动模式失败: {mode_error}", "ROBOT_UI")
-                self.motion_mode_label.setText("运动模式: 获取失败")
-
-            # 检查是否正在移动 - 从service层获取
-            try:
-                is_moving = self.robot_service.is_moving()
-                self.is_moving_label.setText("是" if is_moving else "否")
-            except Exception as moving_error:
-                warning(f"获取移动状态失败: {moving_error}", "ROBOT_UI")
-                self.is_moving_label.setText("移动状态: 获取失败")
 
         except Exception as e:
             error(f"更新状态失败: {e}", "ROBOT_UI")

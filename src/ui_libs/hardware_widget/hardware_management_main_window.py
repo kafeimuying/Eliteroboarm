@@ -72,7 +72,7 @@ class HardwareManagementMainWindow(QMainWindow):
         self.tab_widget.addTab(self.robot_tab, "🤖 机械臂控制")
 
         # 相机管理标签页
-        self.camera_tab = CameraControlTab(self.camera_service, self)
+        self.camera_tab = CameraControlTab(self.camera_service, self, robot_service=self.robot_service)
         self.tab_widget.addTab(self.camera_tab, "📷 相机管理")
 
         # 光源控制标签页

@@ -11,15 +11,26 @@ from PyQt6.QtWidgets import (
     QCheckBox, QSlider, QTextEdit, QMessageBox, QSplitter,
     QFileDialog, QProgressBar, QFrame, QFormLayout, QComboBox,
     QLineEdit, QDialogButtonBox, QDialog, QListWidget, QListWidgetItem, QApplication,
-    QSizePolicy
+    QSizePolicy, QMenu, QInputDialog
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QThread, pyqtSlot, QObject
-from PyQt6.QtGui import QImage, QPixmap, QFont, QColor
+from PyQt6.QtGui import QImage, QPixmap, QFont, QColor, QBrush
 from core.managers.log_manager import info, debug, warning, error
-from core import CameraService
+from core import CameraService, RobotService
+from core.interfaces.hardware import RobotPath
 from .camera_info import CameraInfo
 from .camera_preview import PreviewLabel
 from .save_path_dialog import SavePathDialog
+import sys
+import os
+try:
+    sys.path.append(os.getcwd())
+    from manual_correction_tool import calculate_correction, load_json_matrix
+    from src.algorithms.vision.apriltag_detector import AprilTagDetector
+    VISION_ALGO_AVAILABLE = True
+except ImportError as e:
+    warning(f"视觉算法模块导入失败: {e}", "CAMERA_UI")
+    VISION_ALGO_AVAILABLE = False
 
 # 导入相机驱动
 CAMERA_DRIVERS_AVAILABLE = False
@@ -63,10 +74,14 @@ class CameraControlTab(QWidget):
     camera_connected = pyqtSignal(str, dict)  # camera_id, config
     camera_disconnected = pyqtSignal(str)      # camera_id
     camera_status_changed = pyqtSignal(str, bool, dict)  # camera_id, connected, status_info
+    
+    # 路径管理相关信号
+    show_context_menu_signal = pyqtSignal(int, int)  # row, column
 
-    def __init__(self, camera_service: CameraService, parent=None, vmc_node=None, vmc_callback=None):
+    def __init__(self, camera_service: CameraService, parent=None, vmc_node=None, vmc_callback=None, robot_service: RobotService = None):
         super().__init__(parent)
         self.camera_service = camera_service  # 用于默认连接
+        self.robot_service = robot_service    # 机械臂服务
         self.camera_list = []
         self.current_camera = None
 
@@ -77,14 +92,28 @@ class CameraControlTab(QWidget):
 
         self.main_window = parent  # 获取主窗口引用以访问配置
         
+        # 路径管理相关初始化
+        self.is_recording_path = False
+        self.recorded_path = None
+        self.is_playing_path = False
+        self.path_list = []  # 存储所有路径的列表
+        self._empty_current_path = None  # 缓存空路径对象
+        
         # VMC节点同步功能
         self.vmc_node = vmc_node  # 引用VMC相机节点
         self.vmc_callback = vmc_callback  # 回调函数用于同步selected_hardware_id
         self.is_from_vmc_node = vmc_node is not None  # 标识是否来自VMC节点
         
+        # 连接信号
+        self.show_context_menu_signal.connect(self._handle_context_menu_safely)
+        
         self.setup_ui()
         # 相机管理页面从默认加载配置
         self.load_camera_configs()
+        
+        # 如果有机械臂服务，加载路径列表
+        if self.robot_service:
+            self.refresh_path_list()
 
         # 启动状态更新定时器
         self.status_update_timer = QTimer()
@@ -140,8 +169,12 @@ class CameraControlTab(QWidget):
 
                     self.camera_list.append(camera_info)
 
-                # 更新表格显示
-                self.update_camera_table()
+                # 更新下拉列表显示
+                if hasattr(self, 'update_camera_combo'):
+                    self.update_camera_combo()
+                elif hasattr(self, 'update_camera_table'):
+                    self.update_camera_table()
+
                 info(f"Loaded {len(cameras)} camera configurations", "CAMERA_UI")
             else:
                 warning("hardware_config.json not found", "CAMERA_UI")
@@ -156,14 +189,15 @@ class CameraControlTab(QWidget):
         # 主内容区域
         main_splitter = QSplitter(Qt.Orientation.Horizontal)
 
-        # 左侧：相机管理和实时状态（垂直布局）
+        # 左侧：相机管理和路径管理（垂直布局）
         left_splitter = QSplitter(Qt.Orientation.Vertical)
         left_top = self.create_camera_management_panel()
-        left_bottom = self.create_camera_status_panel()
+        # 将原有的实时状态面板替换为路径管理
+        left_bottom = self.create_enhanced_path_management()
 
         left_splitter.addWidget(left_top)
         left_splitter.addWidget(left_bottom)
-        left_splitter.setSizes([400, 150])  # 管理区域更大，状态区域较小
+        left_splitter.setSizes([150, 400])  # 管理区域较小，路径管理区域较大
 
         main_splitter.addWidget(left_splitter)
 
@@ -171,252 +205,775 @@ class CameraControlTab(QWidget):
         right_panel = self.create_preview_panel()
         main_splitter.addWidget(right_panel)
 
-        main_splitter.setSizes([400, 400])
+        main_splitter.setSizes([450, 450])
         layout.addWidget(main_splitter)
 
         self.setLayout(layout)
 
     def create_camera_management_panel(self):
-        """创建相机管理面板"""
-        group = QGroupBox("相机管理")
+        """创建相机管理面板 - 下拉列表版"""
+        group = QGroupBox("相机连接")
+        group.setMaximumHeight(150)
         layout = QVBoxLayout()
 
-        # 顶部状态栏和操作按钮
-        top_layout = QHBoxLayout()
-
-        # 连接状态指示
-        self.camera_status_indicator = QLabel("🔴 未选择相机")
-        self.camera_status_indicator.setStyleSheet("""
-            QLabel {
-                background-color: #444;
-                color: white;
-                padding: 5px 15px;
-                border-radius: 15px;
-                font-weight: bold;
-            }
-        """)
-        top_layout.addWidget(self.camera_status_indicator)
-
-        top_layout.addStretch()
-
-        # 添加相机按钮
-        add_camera_btn = QPushButton("➕ 添加相机")
-        add_camera_btn.clicked.connect(self.select_camera_from_config)
-        add_camera_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #4CAF50;
-                color: white;
-                border: none;
-                padding: 8px 16px;
-                border-radius: 6px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #45a049;
-                border: 1px solid #45a049;
-            }
-            QPushButton:pressed {
-                background-color: #388E3C;
-                border: 1px solid #388E3C;
-            }
-            QPushButton:disabled {
-                background-color: #cccccc;
-                color: #666666;
-                border: 1px solid #cccccc;
-            }
-        """)
-        top_layout.addWidget(add_camera_btn)
-
-        # 刷新按钮
-        refresh_btn = QPushButton("🔄 刷新状态")
-        refresh_btn.clicked.connect(self.update_camera_status_realtime)
-        refresh_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #2196F3;
-                color: white;
-                border: none;
-                padding: 8px 16px;
-                border-radius: 6px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #1976D2;
-                border: 1px solid #1976D2;
-            }
-            QPushButton:pressed {
-                background-color: #1565C0;
-                border: 1px solid #1976D2;
-            }
-            QPushButton:disabled {
-                background-color: #cccccc;
-                color: #666666;
-                border: 1px solid #cccccc;
-            }
-        """)
-        top_layout.addWidget(refresh_btn)
+        # 第一行：相机选择
+        selection_layout = QHBoxLayout()
+        selection_layout.addWidget(QLabel("相机:"))
         
-        # VMC节点同步按钮（只有从VMC节点打开时才显示）
+        self.camera_combo = QComboBox()
+        self.camera_combo.setMinimumWidth(200)
+        self.camera_combo.currentIndexChanged.connect(self.on_camera_combo_changed)
+        selection_layout.addWidget(self.camera_combo)
+        
+        # 刷新列表按钮
+        refresh_list_btn = QPushButton("🔄")
+        refresh_list_btn.setMaximumWidth(40)
+        refresh_list_btn.setToolTip("重新加载配置文件")
+        refresh_list_btn.clicked.connect(self.load_camera_configs)
+        selection_layout.addWidget(refresh_list_btn)
+        
+        layout.addLayout(selection_layout)
+
+        # 第二行：连接控制
+        control_layout = QHBoxLayout()
+
+        # 连接状态显示
+        self.camera_status_label = QLabel("🔴 未连接")
+        self.camera_status_label.setStyleSheet("color: #f44336; font-weight: bold; font-size: 14px;")
+        control_layout.addWidget(self.camera_status_label)
+
+        # 连接按钮
+        self.connect_btn = QPushButton("连接")
+        self.connect_btn.setMinimumWidth(80)
+        self.connect_btn.clicked.connect(self.toggle_camera_connection)
+        control_layout.addWidget(self.connect_btn)
+        
+        layout.addLayout(control_layout)
+        
+        # VMC节点同步 (保留)
         if self.is_from_vmc_node:
             apply_to_node_btn = QPushButton("🔗 应用到节点")
             apply_to_node_btn.clicked.connect(self.apply_to_vmc_node)
-            apply_to_node_btn.setStyleSheet("""
-                QPushButton {
-                    background-color: #FF9800;
-                    color: white;
-                    border: none;
-                    padding: 8px 16px;
-                    border-radius: 6px;
-                    font-weight: bold;
-                }
-                QPushButton:hover {
-                    background-color: #F57C00;
-                    border: 1px solid #F57C00;
-                }
-                QPushButton:pressed {
-                    background-color: #E65100;
-                    border: 1px solid #E65100;
-                }
-                QPushButton:disabled {
-                    background-color: #cccccc;
-                    color: #666666;
-                    border: 1px solid #cccccc;
-                }
-            """)
-            self.apply_to_node_btn = apply_to_node_btn
-            top_layout.addWidget(apply_to_node_btn)
+            apply_to_node_btn.setStyleSheet("background-color: #FF9800; color: white;")
+            layout.addWidget(apply_to_node_btn)
 
-        layout.addLayout(top_layout)
+        group.setLayout(layout)
+        return group
 
-        # 相机表格
-        self.camera_table = QTableWidget()
-        self.camera_table.setColumnCount(4)
-        self.camera_table.setHorizontalHeaderLabels(["相机名称", "连接状态", "帧数", "预览"])
+    def update_camera_combo(self):
+        """更新相机下拉列表"""
+        self.camera_combo.blockSignals(True)
+        self.camera_combo.clear()
+        
+        for cam_info in self.camera_list:
+            display_text = f"{cam_info.name} ({cam_info.camera_type})"
+            self.camera_combo.addItem(display_text, cam_info)
+            
+        self.camera_combo.blockSignals(False)
+        
+        # 触发一次变更以更新状态显示
+        if self.camera_combo.count() > 0:
+            self.on_camera_combo_changed(0)
+            
+    def on_camera_combo_changed(self, index):
+        """相机选择变更"""
+        if index < 0 or index >= len(self.camera_list):
+            return
+            
+        cam_info = self.camera_combo.itemData(index)
+        self.current_camera = cam_info
+        
+        # 更新按钮状态
+        if cam_info.connected:
+            self.camera_status_label.setText(f"🟢 已连接: {cam_info.name}")
+            self.connect_btn.setText("断开")
+            self.connect_btn.setStyleSheet("background-color: #f44336; color: white;")
+        else:
+            self.camera_status_label.setText("🔴 未连接")
+            self.connect_btn.setText("连接")
+            self.connect_btn.setStyleSheet("")
 
-        # 设置行高
-        self.camera_table.verticalHeader().setDefaultSectionSize(40)
+    def toggle_camera_connection(self):
+        """切换相机连接状态"""
+        if not self.current_camera:
+            return
+            
+        if self.current_camera.connected:
+            # 断开连接
+            self.disconnect_current_camera()
+        else:
+            # 连接
+            # 这里复用原有的 connect_selected_camera 逻辑，但 adapting first
+            self.connect_current_selected_camera()
 
-        # 设置表格样式
-        self.camera_table.setAlternatingRowColors(True)
-        self.camera_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.camera_table.itemSelectionChanged.connect(self.on_camera_selection_changed_with_auto_save)
-        self.camera_table.itemDoubleClicked.connect(self.on_camera_double_clicked)
+    def connect_current_selected_camera(self):
+        """连接当前下拉框选中的相机"""
+        if not self.current_camera:
+            return
+            
+        camera_id = self.current_camera.camera_id
+        config = self.current_camera.config
+        
+        info(f"Connecting to camera: {self.current_camera.name}", "CAMERA_UI")
+        self.connect_btn.setEnabled(False)
+        self.connect_btn.setText("连接中...")
+        QApplication.processEvents()
+        
+        try:
+            # 确保服务实例存在
+            if camera_id not in self.camera_services:
+                 # 创建新服务实例
+                 self.camera_services[camera_id] = CameraService()
+            
+            service = self.camera_services[camera_id]
+            result = service.connect(config)
+            
+            if result['success']:
+                self.current_camera.connected = True
+                self.current_camera.frame_count = 0
+                self.camera_connected.emit(camera_id, config)
+                
+                info(f"Camera connected: {self.current_camera.name}", "CAMERA_UI")
+                self.start_preview() # Auto start preview
+            else:
+                self.current_camera.connected = False
+                error(f"Failed to connect camera: {result.get('error')}", "CAMERA_UI")
+                QMessageBox.warning(self, "连接失败", f"无法连接相机: {result.get('error')}")
 
-        # 设置表格样式，确保header始终置顶
-        self.camera_table.setStyleSheet("""
-            QTableWidget {
-                gridline-color: #444444;
-                background-color: #2b2b2b;
-                alternate-background-color: #333333;
-                color: #ffffff;
+        except Exception as e:
+            error(f"Connection exception: {e}", "CAMERA_UI")
+            QMessageBox.critical(self, "连接异常", f"连接过程发生错误: {str(e)}")
+        finally:
+            self.connect_btn.setEnabled(True)
+            # Update UI
+            self.on_camera_combo_changed(self.camera_combo.currentIndex())
+            
+    def disconnect_current_camera(self):
+        """断开当前相机"""
+        if not self.current_camera:
+            return
+            
+        camera_id = self.current_camera.camera_id
+        if camera_id in self.camera_services:
+            service = self.camera_services[camera_id]
+            service.disconnect()
+            
+        self.current_camera.connected = False
+        self.camera_disconnected.emit(camera_id)
+        
+        # Update UI
+        self.on_camera_combo_changed(self.camera_combo.currentIndex())
+        self.stop_preview()
+
+    def create_enhanced_path_management(self):
+        """创建增强版路径管理面板 (从 RobotControlTab 复制)"""
+        group = QGroupBox("路径管理")
+        layout = QVBoxLayout()
+
+        # 路径记录控制
+        record_group = QGroupBox("路径记录")
+        record_layout = QHBoxLayout()
+
+        self.record_btn = QPushButton("⏺ 开始记录")
+        self.record_btn.clicked.connect(self.toggle_path_recording)
+        self.record_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #FF9800;
+                color: white;
                 border: none;
-            }
-            QTableWidget::item {
-                padding: 5px;
-                border-bottom: 1px solid #444444;
-            }
-            QTableWidget::item:selected {
-                background-color: #007acc;
-            }
-            QHeaderView::section {
-                background-color: #333333;
-                color: #ffffff;
-                padding: 8px;
-                border: 1px solid #444444;
+                padding: 8px 16px;
+                border-radius: 4px;
                 font-weight: bold;
-                text-align: center;
-            }
-            QHeaderView::section:horizontal {
-                border-top: 2px solid #007acc;
             }
         """)
+        record_layout.addWidget(self.record_btn)
 
-        layout.addWidget(self.camera_table)
+        self.add_point_btn = QPushButton("➕ 添加当前点")
+        self.add_point_btn.clicked.connect(self.add_path_point)
+        self.add_point_btn.setEnabled(False)
+        record_layout.addWidget(self.add_point_btn)
 
-        # 添加相机管理相关方法
-        self.update_camera_table()  # 初始化表格
+        self.clear_path_btn = QPushButton("🗑 清空路径")
+        self.clear_path_btn.clicked.connect(self.clear_recorded_path)
+        record_layout.addWidget(self.clear_path_btn)
 
-        # 设置header样式和对齐方式
-        header = self.camera_table.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)  # 名称
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)     # 状态
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)     # 帧数
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)     # 预览
+        record_group.setLayout(record_layout)
+        layout.addWidget(record_group)
 
-        # 确保header始终置顶对齐，标题文本左右居中
-        header.setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
-        header.setStretchLastSection(False)
-        header.setHighlightSections(False)
+        # 视觉伺服控制 (AprilTag)
+        if VISION_ALGO_AVAILABLE:
+            servo_group = QGroupBox("视觉伺服 (AprilTag 0.1m)")
+            servo_layout = QGridLayout()
 
-        # 设置固定列宽
-        self.camera_table.setColumnWidth(0, 180)  # 相机名称
-        self.camera_table.setColumnWidth(1, 120)
-        self.camera_table.setColumnWidth(2, 80)
-        self.camera_table.setColumnWidth(3, 100)
+            self.btn_record_std = QPushButton("🚩 记录标准点")
+            self.btn_record_std.clicked.connect(self.on_record_standard_point)
+            self.btn_record_std.setStyleSheet("background-color: #9C27B0; color: white;")
+            
+            self.btn_follow = QPushButton("🎯 跟随纠偏")
+            self.btn_follow.clicked.connect(self.on_follow_and_correct)
+            self.btn_follow.setStyleSheet("background-color: #2196F3; color: white;")
 
-        # 设置表格大小策略，防止布局变化时header位置改变
-        self.camera_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        self.camera_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.camera_table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+            servo_layout.addWidget(self.btn_record_std, 0, 0)
+            servo_layout.addWidget(self.btn_follow, 0, 1)
+            servo_group.setLayout(servo_layout)
+            layout.addWidget(servo_group)
+        
+        # 路径列表管理
+        list_group = QGroupBox("路径列表")
+        list_layout = QVBoxLayout()
 
-        # 快速操作栏
-        quick_actions_layout = QHBoxLayout()
+        self.path_table = QTableWidget()
+        self.path_table.setColumnCount(6)
+        self.path_table.setHorizontalHeaderLabels(["名称", "点数", "创建时间", "描述", "状态", "操作"])
+        self.path_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.path_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.Stretch)
+        self.path_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.path_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.path_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        self.path_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
+        
+        self.path_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.path_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
 
-        # 连接选中相机
-        connect_selected_btn = QPushButton("🎯 连接选中")
-        connect_selected_btn.clicked.connect(self.connect_selected_camera)
-        connect_selected_btn.setStyleSheet("""
+        # 设置双击事件
+        self.path_table.cellDoubleClicked.connect(self.on_path_double_clicked)
+        # 设置选择变化事件
+        self.path_table.itemSelectionChanged.connect(self.on_path_selection_changed)
+        # 设置右键菜单
+        self.setup_path_table_context_menu()
+
+        list_layout.addWidget(self.path_table)
+
+        # 工具栏 - 放在表格下方，贴底显示
+        toolbar_layout = QHBoxLayout()
+
+        refresh_btn = QPushButton("🔄 刷新")
+        refresh_btn.clicked.connect(self.refresh_path_list)
+        refresh_btn.setToolTip("刷新当前路径显示")
+        toolbar_layout.addWidget(refresh_btn)
+
+        load_btn = QPushButton("📂 加载已保存")
+        load_btn.clicked.connect(self.load_saved_paths_dialog)
+        load_btn.setToolTip("从workspace/paths/加载已保存的路径")
+        toolbar_layout.addWidget(load_btn)
+
+        clear_btn = QPushButton("🗑 清空当前")
+        clear_btn.clicked.connect(self.clear_recorded_path)
+        clear_btn.setToolTip("清空当前记录的路径")
+        toolbar_layout.addWidget(clear_btn)
+
+        # 显示路径文件位置
+        path_location_label = QLabel("📁 workspace/paths/")
+        path_location_label.setStyleSheet("color: #666666; font-size: 11px; font-style: italic;")
+        path_location_label.setToolTip("已保存路径存储位置")
+        toolbar_layout.addWidget(path_location_label)
+
+        toolbar_layout.addStretch()
+
+        list_layout.addLayout(toolbar_layout)
+
+        list_group.setLayout(list_layout)
+        layout.addWidget(list_group)
+
+        # 路径播放控制
+        playback_group = QGroupBox("路径播放")
+        playback_layout = QGridLayout()
+
+        playback_layout.addWidget(QLabel("循环:"), 0, 0)
+        self.loop_spinbox = QSpinBox()
+        self.loop_spinbox.setRange(1, 100)
+        self.loop_spinbox.setValue(1)
+        self.loop_spinbox.setSuffix("次")
+        playback_layout.addWidget(self.loop_spinbox, 0, 1)
+
+        self.play_btn = QPushButton("▶ 播放")
+        self.play_btn.clicked.connect(self.play_path)
+        self.play_btn.setEnabled(False)
+        self.play_btn.setStyleSheet("""
             QPushButton {
                 background-color: #4CAF50;
                 color: white;
                 border: none;
-                padding: 6px 12px;
+                padding: 8px 16px;
                 border-radius: 4px;
                 font-weight: bold;
-                font-size: 12px;
             }
         """)
-        quick_actions_layout.addWidget(connect_selected_btn)
+        playback_layout.addWidget(self.play_btn, 1, 0)
 
-        # 断开连接
-        disconnect_btn = QPushButton("🔌 断开连接")
-        disconnect_btn.clicked.connect(self.disconnect_current_camera)
-        disconnect_btn.setStyleSheet("""
+        self.stop_btn = QPushButton("⏹ 停止")
+        self.stop_btn.clicked.connect(self.stop_path_playback)
+        self.stop_btn.setEnabled(False)
+        self.stop_btn.setStyleSheet("""
             QPushButton {
                 background-color: #f44336;
                 color: white;
                 border: none;
-                padding: 6px 12px;
+                padding: 8px 16px;
                 border-radius: 4px;
                 font-weight: bold;
-                font-size: 12px;
             }
         """)
-        quick_actions_layout.addWidget(disconnect_btn)
+        playback_layout.addWidget(self.stop_btn, 1, 1)
 
-        # 切换相机
-        switch_btn = QPushButton("🔄 切换相机")
-        switch_btn.clicked.connect(self.switch_camera)
-        switch_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #9C27B0;
-                color: white;
-                border: none;
-                padding: 6px 12px;
+        playback_group.setLayout(playback_layout)
+        layout.addWidget(playback_group)
+
+        # 当前路径信息
+        self.current_path_label = QLabel("📄 无路径加载")
+        self.current_path_label.setStyleSheet("""
+            QLabel {
+                background-color: #f0f0f0;
+                border: 1px solid #ddd;
                 border-radius: 4px;
+                padding: 8px;
                 font-weight: bold;
-                font-size: 12px;
+                color: #666666;
             }
         """)
-        quick_actions_layout.addWidget(switch_btn)
-
-        quick_actions_layout.addStretch()
-        layout.addLayout(quick_actions_layout)
-
-        # 不再自动添加示例相机，用户需要手动添加
-        # self.add_sample_cameras()  # 已移除，让用户自己配置相机
+        layout.addWidget(self.current_path_label)
 
         group.setLayout(layout)
         return group
+
+    def start_new_path_recording(self):
+        """开始新的路径记录"""
+        if not self.robot_service or not self.robot_service.is_connected():
+            QMessageBox.warning(self, "未连接", "请先连接机械臂")
+            return
+
+        # 生成路径名称
+        path_name = f"路径_{int(time.time())}"
+
+        # 开始记录
+        result = self.robot_service.start_path_recording(path_name)
+        if result['success']:
+            self.is_recording_path = True
+            self.recorded_path = self.robot_service.get_recorded_path()
+
+            # 更新UI
+            self.record_btn.setText("⏹ 停止记录")
+            self.record_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #f44336;
+                    color: white;
+                    border: none;
+                    padding: 8px 16px;
+                    border-radius: 4px;
+                    font-weight: bold;
+                }
+            """)
+            self.add_point_btn.setEnabled(True)
+
+            # 刷新路径列表
+            self.refresh_path_list()
+
+            QMessageBox.information(self, "记录开始", f"开始记录新路径: {path_name}")
+        else:
+            warning(f"开始记录失败: {result.get('error')}", "PATH_UI")
+
+    def toggle_path_recording(self):
+        """切换路径记录状态"""
+        if not self.robot_service or not self.robot_service.is_connected():
+            QMessageBox.warning(self, "未连接", "请先连接机械臂")
+            return
+
+        if not self.is_recording_path:
+            # 开始记录
+            path_name = f"路径_{int(time.time())}"
+            result = self.robot_service.start_path_recording(path_name)
+            if result['success']:
+                self.is_recording_path = True
+                self.record_btn.setText("⏹ 停止记录")
+                self.record_btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: #f44336;
+                        color: white;
+                        border: none;
+                        padding: 8px 16px;
+                        border-radius: 4px;
+                        font-weight: bold;
+                    }
+                """)
+                self.add_point_btn.setEnabled(True)
+
+                # 路径对象将由具体的驱动管理（模拟或真实）
+                self.recorded_path = self.robot_service.get_recorded_path()
+                self.refresh_path_list()
+
+                QMessageBox.information(self, "记录开始", f"开始记录路径: {path_name}")
+            else:
+                warning(f"开始记录失败: {result.get('error')}", "PATH_UI")
+        else:
+            # 停止记录
+            result = self.robot_service.stop_path_recording()
+            if result['success']:
+                self.is_recording_path = False
+                self.record_btn.setText("⏺ 开始记录")
+                self.record_btn.setStyleSheet("""
+                    QPushButton {
+                        background-color: #FF9800;
+                        color: white;
+                        border: none;
+                        padding: 8px 16px;
+                        border-radius: 4px;
+                        font-weight: bold;
+                    }
+                """)
+                self.add_point_btn.setEnabled(False)
+
+                # 获取记录的路径
+                self.recorded_path = self.robot_service.get_recorded_path()
+                self.refresh_path_list()
+
+                if self.recorded_path and len(self.recorded_path.points) > 0:
+                    # 自动弹出保存对话框
+                    self.save_recorded_path()
+            else:
+                warning(f"停止记录失败: {result.get('error')}", "PATH_UI")
+
+    def add_path_point(self):
+        """添加当前路径点"""
+        if not self.is_recording_path:
+            QMessageBox.warning(self, "未在记录", "请先开始路径记录")
+            return
+
+        result = self.robot_service.add_path_point()
+        if result['success']:
+            info("路径点已添加", "PATH_UI")
+
+            # 更新当前路径显示
+            self.recorded_path = self.robot_service.get_recorded_path()
+            self.refresh_path_list()
+
+            # 更新当前路径标签
+            current_path = self.robot_service.get_recorded_path()
+            point_count = len(current_path.points) if current_path else 0
+            self.current_path_label.setText(f"📄 当前路径: {current_path.name if current_path else '未命名'} ({point_count}点)")
+            
+            self.add_robot_log("路径", f"路径点已添加（当前共{point_count}个点）")
+        else:
+            warning(f"添加路径点失败: {result.get('error')}", "PATH_UI")
+
+    def clear_recorded_path(self):
+        """清空记录的路径"""
+        if self.recorded_path and len(self.recorded_path.points) > 0:
+            reply = QMessageBox.question(
+                self, "确认清空",
+                f"确定要清空当前记录的路径吗？\\n包含{len(self.recorded_path.points)}个路径点。",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                result = self.robot_service.clear_recorded_path()
+                if result['success']:
+                    self.recorded_path = self.robot_service.get_recorded_path()
+                    self.refresh_path_list()
+                    self.current_path_label.setText("📄 无路径加载")
+                    self.add_robot_log("路径", "路径已清空")
+                else:
+                    warning(f"清空路径失败: {result.get('error')}", "PATH_UI")
+
+    def save_recorded_path(self):
+        """保存记录的路径"""
+        if not self.recorded_path:
+            return
+
+        try:
+            dialog = SavePathDialog(f"路径_{len(self.recorded_path.points)}点", self)
+
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                path_info = dialog.get_path_info()
+                self.recorded_path.name = path_info['name']
+                self.recorded_path.description = path_info['description']
+
+                result = self.robot_service.save_path(self.recorded_path)
+                if result['success']:
+                    self.refresh_path_list()
+                    QMessageBox.information(self, "保存成功", f"路径 '{self.recorded_path.name}' 已保存到 workspace/paths/")
+                    self.add_robot_log("信息", f"路径已保存: {self.recorded_path.name}")
+                else:
+                    warning(f"保存路径失败: {result.get('error')}", "ROBOT_UI")
+        except Exception as e:
+            error(f"保存路径失败: {e}", "ROBOT_UI")
+            QMessageBox.critical(self, "错误", f"保存路径失败: {e}")
+
+    def save_current_path(self):
+        """保存当前路径"""
+        if not self.recorded_path or len(self.recorded_path.points) == 0:
+            QMessageBox.warning(self, "保存失败", "没有可保存的路径数据")
+            return
+        self.save_recorded_path()
+
+    def refresh_path_list(self):
+        """刷新路径列表显示"""
+        try:
+            display_paths = []
+            # 1. 当前路径
+            if self.recorded_path:
+                status = "🔴 记录中" if self.is_recording_path else "⏸ 已停止"
+                display_paths.append({
+                    'path': self.recorded_path,
+                    'status': status,
+                    'is_recording': self.is_recording_path,
+                    'is_current': True
+                })
+            else:
+                if self._empty_current_path is None:
+                    from core.interfaces.hardware import RobotPath
+                    self._empty_current_path = RobotPath(
+                        name="无当前路径",
+                        points=[],
+                        created_time=time.time(),
+                        description="点击'⏺ 开始记录'或'📂 加载已保存'来创建路径"
+                    )
+                display_paths.append({
+                    'path': self._empty_current_path,
+                    'status': "📝 无路径",
+                    'is_recording': False,
+                    'is_current': True,
+                    'is_empty': True
+                })
+
+            # 2. 其他路径
+            for path_data in self.path_list:
+                try:
+                    if hasattr(path_data, 'get') and 'path' in path_data:
+                        path = path_data['path']
+                        if path != self.recorded_path:
+                            display_paths.append({
+                                'path': path,
+                                'status': "✅ 已加载",
+                                'is_recording': False,
+                                'is_current': False,
+                                'is_empty': False
+                            })
+                except Exception:
+                    continue
+
+            self.path_table.setRowCount(len(display_paths))
+            self.path_table.clearSpans()
+
+            for row, path_data in enumerate(display_paths):
+                path = path_data['path']
+                
+                # Name
+                name_text = path.name or "未命名路径"
+                if path_data['is_current']: name_text = "🎯 " + name_text
+                name_item = QTableWidgetItem(name_text)
+                name_item.setData(Qt.ItemDataRole.UserRole, path)
+                self.path_table.setItem(row, 0, name_item)
+                
+                # Points
+                points_item = QTableWidgetItem(str(len(path.points)))
+                self.path_table.setItem(row, 1, points_item)
+                
+                # Time
+                time_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(path.created_time))
+                self.path_table.setItem(row, 2, QTableWidgetItem(time_str))
+                
+                # Description
+                self.path_table.setItem(row, 3, QTableWidgetItem(path.description or ""))
+                
+                # Status
+                status_item = QTableWidgetItem(path_data['status'])
+                if path_data['is_recording']:
+                    status_item.setForeground(QBrush(QColor("red")))
+                self.path_table.setItem(row, 4, status_item)
+                
+                # Op Button
+                if path_data.get('is_empty', False):
+                    action_btn = QPushButton("➕ 新建路径")
+                    action_btn.clicked.connect(self.start_new_path_recording)
+                elif path_data['is_current'] and path_data['is_recording']:
+                    action_btn = QPushButton("⏹ 停止记录")
+                    action_btn.clicked.connect(self.toggle_path_recording)
+                elif path_data['is_current'] and not path_data['is_recording'] and len(path.points) > 0:
+                    action_btn = QPushButton("💾 保存路径")
+                    action_btn.clicked.connect(self.save_current_path)
+                elif not path_data['is_current']:
+                    action_btn = QPushButton("❌ 移除")
+                    action_btn.clicked.connect(lambda checked, idx=row: self.remove_path_from_list(idx))
+                else:
+                    action_btn = QPushButton("📝 无数据")
+                    action_btn.setEnabled(False)
+                
+                self.path_table.setCellWidget(row, 5, action_btn)
+
+        except Exception as e:
+            error(f"刷新路径列表显示失败: {e}", "ROBOT_UI")
+
+    def load_saved_paths_dialog(self):
+        """加载已保存路径对话框"""
+        if not self.robot_service: return
+        
+        try:
+            saved_paths = self.robot_service.list_saved_paths()
+            if not saved_paths:
+                QMessageBox.information(self, "无已保存路径", "workspace/paths/ 中没有找到已保存的路径")
+                return
+
+            dialog = QDialog(self)
+            dialog.setWindowTitle("加载已保存路径")
+            dialog.setMinimumSize(600, 400)
+            layout = QVBoxLayout()
+            layout.addWidget(QLabel("选择要加载的已保存路径（支持多选）："))
+
+            path_table = QTableWidget()
+            path_table.setColumnCount(5)
+            path_table.setHorizontalHeaderLabels(["路径名称", "点数", "创建时间", "描述", "ID"])
+            path_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+            path_table.setSelectionMode(QTableWidget.SelectionMode.MultiSelection)
+            path_table.hideColumn(4) # Hide ID
+
+            path_table.setRowCount(len(saved_paths))
+            for row, path_id in enumerate(saved_paths):
+                path = self.robot_service.load_path(path_id)
+                if path:
+                    path_table.setItem(row, 0, QTableWidgetItem(path.name or f"路径_{path_id}"))
+                    path_table.setItem(row, 1, QTableWidgetItem(str(len(path.points))))
+                    path_table.setItem(row, 2, QTableWidgetItem(time.strftime("%Y-%m-%d %H:%M", time.localtime(path.created_time))))
+                    path_table.setItem(row, 3, QTableWidgetItem(path.description or ""))
+                    path_table.setItem(row, 4, QTableWidgetItem(path_id))
+
+            layout.addWidget(path_table)
+            
+            button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
+            button_box.accepted.connect(dialog.accept)
+            button_box.rejected.connect(dialog.reject)
+            layout.addWidget(button_box)
+
+            dialog.setLayout(layout)
+
+            if dialog.exec() == QDialog.DialogCode.Accepted:
+                selected_rows = path_table.selectionModel().selectedRows()
+                for selected_row in selected_rows:
+                    row = selected_row.row()
+                    path_id = path_table.item(row, 4).text()
+                    path = self.robot_service.load_path(path_id)
+                    if path:
+                        self.add_path_to_list(path)
+                self.refresh_path_list()
+
+        except Exception as e:
+            error(f"加载路径失败: {e}", "ROBOT_UI")
+
+    def add_path_to_list(self, path):
+        """添加路径到列表"""
+        for existing_data in self.path_list:
+            if existing_data['path'].created_time == path.created_time:
+                return # Skip duplicate
+        self.path_list.append({'path': path, 'added_time': time.time()})
+
+    def remove_path_from_list(self, row_index):
+        """移除路径"""
+        try:
+            if row_index <= 0: return # Skip current path
+            actual_index = row_index - 1
+            if 0 <= actual_index < len(self.path_list):
+                del self.path_list[actual_index]
+                self.refresh_path_list()
+        except Exception:
+            pass
+
+    def on_path_selection_changed(self):
+        """处理路径表格选择变化事件"""
+        selected_items = self.path_table.selectedItems()
+        if not selected_items:
+            self.current_path_label.setText("📄 无路径加载")
+            self.play_btn.setEnabled(False)
+            return
+            
+        # Simplified selection logic
+        row = selected_items[0].row()
+        item = self.path_table.item(row, 0)
+        if item:
+            path = item.data(Qt.ItemDataRole.UserRole)
+            if path:
+                self.play_btn.setEnabled(True)
+                self.current_path_label.setText(f"📄 选中: {path.name} ({len(path.points)}点)")
+
+    def on_path_double_clicked(self, row, column):
+        """处理路径表格双击事件"""
+        self.play_path()
+
+    def play_path(self):
+        """播放路径"""
+        if not self.robot_service or not self.robot_service.is_connected():
+            QMessageBox.warning(self, "未连接", "请先连接机械臂")
+            return
+
+        target_path = None
+        selected_rows = self.path_table.selectionModel().selectedRows()
+        if selected_rows:
+            item = self.path_table.item(selected_rows[0].row(), 0)
+            if item: target_path = item.data(Qt.ItemDataRole.UserRole)
+        
+        if not target_path: target_path = self.recorded_path
+        if not target_path: return
+
+        loop_count = self.loop_spinbox.value()
+        self.add_robot_log("信息", f"开始播放: {target_path.name}")
+        
+        result = self.robot_service.play_path(target_path, loop_count)
+        if result['success']:
+            self.is_playing_path = True
+            self.play_btn.setEnabled(False)
+            self.stop_btn.setEnabled(True)
+            self.current_path_label.setText(f"🔄 正在播放: {target_path.name}")
+            QMessageBox.information(self, "播放开始", f"开始播放路径 '{target_path.name}'")
+        else:
+            warning(f"路径播放失败: {result.get('error')}", "ROBOT_UI")
+
+    def stop_path_playback(self):
+        """停止播放"""
+        if not self.robot_service: return
+        result = self.robot_service.stop_path_playback()
+        if result['success']:
+            self.is_playing_path = False
+            self.play_btn.setEnabled(True)
+            self.stop_btn.setEnabled(False)
+            self.add_robot_log("信息", "路径播放已停止")
+            QMessageBox.information(self, "播放停止", "路径播放已停止")
+
+    def setup_path_table_context_menu(self):
+        self.path_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.path_table.customContextMenuRequested.connect(self.show_path_context_menu)
+
+    def show_path_context_menu(self, position):
+        item = self.path_table.itemAt(position)
+        if item and item.row() >= 0:
+            self.show_context_menu_signal.emit(item.row(), 0)
+
+    def _handle_context_menu_safely(self, row, column):
+        """Handle context menu safely"""
+        item = self.path_table.item(row, 0)
+        if not item: return
+        path = item.data(Qt.ItemDataRole.UserRole)
+        if not path: return
+        
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle(f"路径: {path.name}")
+        msg_box.setText(f"名称: {path.name}\n点数: {len(path.points)}")
+        details_btn = msg_box.addButton("查看详情", QMessageBox.ButtonRole.ActionRole)
+        msg_box.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+        msg_box.exec()
+        
+        if msg_box.clickedButton() == details_btn:
+            self._show_path_details_safe(path)
+
+    def _show_path_details_safe(self, path):
+        if not path: return
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"路径详情: {path.name}")
+        layout = QVBoxLayout()
+        text = f"ID: {path.id}\n名称: {path.name}\n点数: {len(path.points)}\n创建时间: {time.ctime(path.created_time)}"
+        layout.addWidget(QLabel(text))
+        dialog.setLayout(layout)
+        dialog.exec()
+
+    def add_robot_log(self, level, message):
+        """添加日志"""
+        info(f"[ROBOT] {message}", "CAMERA_UI_ROBOT")
 
     def create_preview_panel(self):
         """创建预览面板"""
@@ -618,66 +1175,20 @@ class CameraControlTab(QWidget):
 
     def add_sample_cameras(self):
         """添加示例相机 - 改进版"""
+        # 清空现有列表
+        self.camera_list = []
+        if hasattr(self, 'camera_combo'):
+            self.camera_combo.clear()
+
         sample_cameras = [
             ("主相机", "rtsp://192.168.0.2:554/Streaming/Channels/101", "1920x1080", "30fps"),
             ("辅助相机", "rtsp://192.168.0.12:554/Streaming/Channels/101", "1280x720", "25fps"),
             ("侧视相机", "rtsp://192.168.0.13:554/Streaming/Channels/101", "800x600", "20fps")
         ]
 
-        self.camera_table.setRowCount(len(sample_cameras))
-        for row, (name, rtsp_url, resolution, fps) in enumerate(sample_cameras):
-            # 名称
-            name_item = QTableWidgetItem(name)
-            name_item.setToolTip(f"RTSP: {rtsp_url}")
-            self.camera_table.setItem(row, 0, name_item)
-
-            # 连接状态
-            status_item = QTableWidgetItem("🔴 未连接")
-            status_item.setForeground(QColor('#f44336'))
-            status_item.setFont(QFont('', 8, QFont.Weight.Bold))
-            self.camera_table.setItem(row, 1, status_item)
-
-            # 分辨率
-            resolution_item = QTableWidgetItem(resolution)
-            resolution_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.camera_table.setItem(row, 2, resolution_item)
-
-            # 帧率
-            fps_item = QTableWidgetItem(fps)
-            fps_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.camera_table.setItem(row, 3, fps_item)
-
-            # 操作按钮
-            connect_btn = QPushButton("🎯 连接")
-            connect_btn.clicked.connect(lambda checked, idx=row: self.connect_camera(idx))
-            connect_btn.setStyleSheet("""
-                QPushButton {
-                    background-color: #4CAF50;
-                    color: white;
-                    border: none;
-                    padding: 5px 10px;
-                    border-radius: 4px;
-                    font-size: 11px;
-                    font-weight: bold;
-                                    }
-                QPushButton:hover {
-                    background-color: #45a049;
-                    border: 1px solid #45a049;
-                }
-                QPushButton:pressed {
-                    background-color: #388E3C;
-                    border: 1px solid #388E3C;
-                }
-                QPushButton:disabled {
-                    background-color: #cccccc;
-                    color: #666666;
-                    border: 1px solid #cccccc;
-                }
-            """)
-            self.camera_table.setCellWidget(row, 4, connect_btn)
-
+        for i, (name, rtsp_url, resolution, fps) in enumerate(sample_cameras):
             # 创建相机信息对象
-            camera_info = CameraInfo(f"camera_{row}", {
+            camera_info = CameraInfo(f"camera_{i}", {
                 'name': name,
                 'rtsp_url': rtsp_url,
                 'resolution': resolution,
@@ -686,6 +1197,17 @@ class CameraControlTab(QWidget):
                 'password': 'admin123'
             })
             self.camera_list.append(camera_info)
+            
+            # 添加到下拉框
+            if hasattr(self, 'camera_combo'):
+                self.camera_combo.addItem(f"{name} ({resolution})", camera_info)
+
+        # 默认选中第一项
+        if self.camera_list and hasattr(self, 'camera_combo'):
+            self.camera_combo.setCurrentIndex(0)
+            self.current_camera = self.camera_list[0]
+            if hasattr(self, 'update_camera_info_display'):
+                self.update_camera_info_display()
 
     def add_camera(self):
         """添加相机"""
@@ -736,246 +1258,25 @@ class CameraControlTab(QWidget):
             })
 
             self.camera_list.append(camera_info)
-            # 添加到表格
-            row = self.camera_table.rowCount()
-            self.camera_table.insertRow(row)
-
-            # 名称
-            name_item = QTableWidgetItem(camera_info.name)
-            name_item.setToolTip(f"RTSP: {rtsp_edit.text()}")
-            self.camera_table.setItem(row, 0, name_item)
-
-            # 连接状态
-            status_item = QTableWidgetItem("🔴 未配置")
-            status_item.setForeground(QColor('#f44336'))
-            self.camera_table.setItem(row, 1, status_item)
-
-            # 分辨率
-            resolution_item = QTableWidgetItem(camera_info.resolution)
-            resolution_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.camera_table.setItem(row, 2, resolution_item)
-
-            # 帧率
-            fps_item = QTableWidgetItem(fps_value)
-            fps_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            self.camera_table.setItem(row, 3, fps_item)
-
-            # 连接按钮
-            connect_btn = QPushButton("🎯 连接")
-            connect_btn.clicked.connect(lambda checked, idx=row: self.connect_camera(idx))
-            connect_btn.setStyleSheet("""
-                QPushButton {
-                    background-color: #4CAF50;
-                    color: white;
-                    border: none;
-                    padding: 5px 10px;
-                    border-radius: 3px;
-                    font-size: 11px;
-                    font-weight: bold;
-                }
-                QPushButton:hover {
-                    background-color: #45a049;
-                }
-            """)
-            self.camera_table.setCellWidget(row, 4, connect_btn)
+            
+            # 添加到下拉框
+            if hasattr(self, 'camera_combo'):
+                self.camera_combo.addItem(f"{camera_info.name} ({camera_info.resolution})", camera_info)
+                # 选中新添加的相机
+                image_idx = self.camera_combo.count() - 1
+                self.camera_combo.setCurrentIndex(image_idx)
 
             info(f"添加相机: {camera_info.name}", "CAMERA_UI")
 
     def connect_camera(self, row: int):
-        """连接指定相机"""
+        """连接指定相机 (兼容性保留，实际逻辑已迁移到 connect_current_selected_camera)"""
         if row >= len(self.camera_list):
             return
 
-        camera_info = self.camera_list[row]
-
-        # 如果有当前相机正在预览，停止预览但不断开连接
-        if self.current_camera and self.current_camera.connected:
-            info(f"停止当前相机预览: {self.current_camera.name}", "CAMERA_UI")
-
-            # 停止当前相机的流式传输
-            if self.current_camera.camera_id in self.streaming_services:
-                camera_service = self.streaming_services[self.current_camera.camera_id]
-                if camera_service.is_streaming():
-                    result = camera_service.stop_streaming()
-                    if result['success']:
-                        info(f"已停止相机 {self.current_camera.name} 的流式传输", "CAMERA_UI")
-                    else:
-                        warning(f"停止相机 {self.current_camera.name} 流式传输失败: {result.get('error')}", "CAMERA_UI")
-
-            # 保持连接状态，只停止预览
-
-        # 连接新相机
-        status_item = self.camera_table.item(row, 1)
-        name_item = self.camera_table.item(row, 0)
-
-        try:
-            # 显示连接中状态
-            status_item.setText("🟡 连接中...")
-            status_item.setForeground(QColor('#FF9800'))
-            status_item.setFont(QFont('', 8, QFont.Weight.Bold))
-            if hasattr(self, 'camera_status_indicator'):
-                self.camera_status_indicator.setText("🟡 连接中...")
-                self.camera_status_indicator.setStyleSheet("""
-                    QLabel {
-                        background-color: #FF9800;
-                        color: white;
-                        padding: 5px 15px;
-                        border-radius: 15px;
-                        font-weight: bold;
-                    }
-                """)
-
-            # 强制UI更新
-            QApplication.processEvents()
-
-            # 使用Service层连接相机
-            try:
-                # 确保相机有独立的CameraService实例
-                if camera_info.camera_id not in self.streaming_services:
-                    from core.services.camera_service import CameraService
-                    self.streaming_services[camera_info.camera_id] = CameraService()
-
-                # 获取或创建这个相机的CameraService
-                camera_service = self.streaming_services[camera_info.camera_id]
-
-                info(f"使用Service层连接相机: {camera_info.name}", "CAMERA_UI")
-                connection_result = camera_service.connect(camera_info.config)
-                connection_success = connection_result.get('success', False)
-
-                if connection_success:
-                    # 缓存相机驱动实例（用于向后兼容）
-                    camera_info.camera_driver = camera_service.camera
-
-                    # --- 关键修复: 更新全局共享的 camera_service ---
-                    # RobotControlTab 使用的是主窗口传递的 self.camera_service
-                    # 这里我们需要将刚才连接成功的相机实例设置给它，以便机器人标定时能调用
-                    if self.camera_service:
-                        info(f"更新全局CameraService实例为: {camera_info.name}", "CAMERA_UI")
-                        self.camera_service.set_camera(camera_service.camera)
-                    
-                    info(f"相机连接成功: {camera_info.name}", "CAMERA_UI")
-                else:
-                    error_message = connection_result.get('error', '未知连接错误')
-                    warning(f"相机连接失败: {camera_info.name} - {error_message}", "CAMERA_UI")
-
-            except Exception as e:
-                connection_success = False
-                error_message = f"Service层连接异常: {str(e)}"
-                error(f"相机连接异常: {camera_info.name} - {str(e)}", "CAMERA_UI")
-
-            # 检查连接结果 - 只有真实连接成功才显示连接成功
-            if connection_success:
-                # 连接成功
-                camera_info.connected = True
-                self.current_camera = camera_info
-
-                # 发送连接信号
-                self.camera_connected.emit(camera_info.camera_id, camera_info.config)
-
-                status_item.setText("🟢 已连接")
-                status_item.setForeground(QColor('#4CAF50'))
-                status_item.setFont(QFont('', 8, QFont.Weight.Bold))
-
-                name_item.setForeground(QColor('#4CAF50'))
-                name_item.setFont(QFont('', -1, QFont.Weight.Bold))
-                if hasattr(self, 'camera_status_indicator'):
-                    self.camera_status_indicator.setText(f"🟢 {camera_info.name}")
-                    self.camera_status_indicator.setStyleSheet("""
-                        QLabel {
-                            background-color: #4CAF50;
-                            color: white;
-                            padding: 5px 15px;
-                            border-radius: 15px;
-                            font-weight: bold;
-                        }
-                    """)
-
-                if hasattr(self, 'camera_status_label'):
-                    self.camera_status_label.setText(f"🟢 已连接: {camera_info.name}")
-
-                # 不自动启动预览，让用户手动选择
-                # 连接成功后，更新右侧预览控制按钮状态
-                self.start_preview_btn.setEnabled(True)
-                self.stop_preview_btn.setEnabled(False)
-                if hasattr(self, 'auto_focus_btn'):
-                    self.auto_focus_btn.setEnabled(True)
-                self.preview_label.setText(f"✅ 已连接: {camera_info.name}")
-
-                # 获取相机信息（静默连接，不显示弹窗）
-                camera_info_text = camera_info.resolution
-                if self.camera_service.get_info():
-                    try:
-                        driver_info = self.camera_service.get_info()
-                        camera_info_text = f"{driver_info.get('type', '未知')} - {camera_info.resolution}"
-                        info(f"相机连接成功: {camera_info.name} ({camera_info_text})", "CAMERA_UI")
-                    except Exception as info_error:
-                        warning(f"获取相机信息失败: {info_error}", "CAMERA_UI")
-
-                # 如果有相机驱动，尝试获取驱动信息
-                if camera_info.camera_driver and hasattr(camera_info.camera_driver, 'get_info'):
-                    try:
-                        driver_info = camera_info.camera_driver.get_info()
-                        if driver_info:
-                            camera_info_text = f"{driver_info.get('type', '未知')} - {camera_info.resolution}"
-                            info(f"驱动信息: {driver_info}", "CAMERA_UI")
-                    except Exception as info_error:
-                        warning(f"获取驱动信息失败: {info_error}", "CAMERA_UI")
-
-            else:
-                # 连接失败
-                camera_info.connected = False
-
-                status_item.setText("🔴 连接失败")
-                status_item.setForeground(QColor('#f44336'))
-                status_item.setFont(QFont('', 8, QFont.Weight.Bold))
-
-                if hasattr(self, 'camera_status_indicator'):
-                    self.camera_status_indicator.setText("🔴 连接失败")
-                    self.camera_status_indicator.setStyleSheet("""
-                        QLabel {
-                            background-color: #f44336;
-                            color: white;
-                            padding: 5px 15px;
-                            border-radius: 15px;
-                            font-weight: bold;
-                        }
-                    """)
-
-                if hasattr(self, 'camera_status_label'):
-                    self.camera_status_label.setText("🔴 连接失败")
-
-                error(f"相机连接失败: {camera_info.name} - {error_message}", "CAMERA_UI")
-                QMessageBox.warning(self, "连接失败", f"无法连接相机 {camera_info.name}:\n{error_message}")
-
-        except Exception as e:
-            error(f"连接相机时发生异常: {str(e)}", "CAMERA_UI")
-            QMessageBox.warning(self, "连接异常", f"连接相机时发生异常:\n{str(e)}")
-
-            # 更新异常行的样式
-            if row < len(self.camera_list):
-                status_item = self.camera_table.item(row, 1)
-                name_item = self.camera_table.item(row, 0)
-                if status_item:
-                    status_item.setText("🔴 连接异常")
-                    status_item.setForeground(QColor('#f44336'))
-                    status_item.setFont(QFont('', 8, QFont.Weight.Bold))
-                if name_item:
-                    name_item.setForeground(QColor('#f44336'))
-
-                if hasattr(self, 'camera_status_indicator'):
-                    self.camera_status_indicator.setText("🔴 连接异常")
-                    self.camera_status_indicator.setStyleSheet("""
-                        QLabel {
-                            background-color: #f44336;
-                            color: white;
-                            padding: 5px 15px;
-                            border-radius: 15px;
-                            font-weight: bold;
-                        }
-                    """)
-
-                if hasattr(self, 'camera_status_label'):
-                    self.camera_status_label.setText("🔴 连接异常")
+        # 切换到指定相机并尝试连接
+        if hasattr(self, 'camera_combo'):
+            self.camera_combo.setCurrentIndex(row)
+            self.connect_current_selected_camera()
 
         
     def trigger_auto_focus(self):
@@ -1039,19 +1340,27 @@ class CameraControlTab(QWidget):
             return
 
         try:
+            self.preview_label.setText("⌛ 启动预览中...")
+            QApplication.processEvents()
+
             # 使用统一的预览方法，确保FPS一致性
-            self.start_camera_preview(self.current_camera)
+            success = self.start_camera_preview(self.current_camera)
 
-            # 更新按钮状态
-            self.start_preview_btn.setEnabled(False)
-            self.stop_preview_btn.setEnabled(True)
-            self.preview_label.setText("📹 预览中...")
+            if success:
+                # 更新按钮状态
+                self.start_preview_btn.setEnabled(False)
+                self.stop_preview_btn.setEnabled(True)
+                self.preview_label.setText("📹 预览中...")
 
-            info(f"相机预览已启动: {self.current_camera.name} (FPS: {self.current_camera.config.get('fps', 30)})", "CAMERA_UI")
+                info(f"相机预览已启动: {self.current_camera.name} (FPS: {self.current_camera.config.get('fps', 30)})", "CAMERA_UI")
+            else:
+                self.preview_label.setText("❌ 预览失败")
+                QMessageBox.warning(self, "预览失败", "无法启动相机预览，请检查日志")
 
         except Exception as e:
             error(f"启动预览失败: {e}", "CAMERA_UI")
             QMessageBox.warning(self, "预览失败", f"启动预览失败: {str(e)}")
+            self.start_preview_btn.setEnabled(True)
 
     def stop_all_previews(self):
         """停止所有相机的预览"""
@@ -1185,10 +1494,13 @@ class CameraControlTab(QWidget):
 
                 # 更新状态信息
                 if self.current_camera and camera_info.camera_id == self.current_camera.camera_id:
-                    self.resolution_label.setText(f"分辨率: {width}x{height}")
-                    current_time = time.strftime("%H:%M:%S")
-                    self.last_frame_time_label.setText(f"最后帧: {current_time}")
-                    self.fps_label.setText(f"{camera_info.config.get('fps', 30)}fps")
+                    if hasattr(self, 'resolution_label'):
+                        self.resolution_label.setText(f"分辨率: {width}x{height}")
+                    if hasattr(self, 'last_frame_time_label'):
+                        current_time = time.strftime("%H:%M:%S")
+                        self.last_frame_time_label.setText(f"最后帧: {current_time}")
+                    if hasattr(self, 'fps_label'):
+                        self.fps_label.setText(f"{camera_info.config.get('fps', 30)}fps")
 
                 # 更新表格中的帧数显示
                 self.update_frame_count_in_table(camera_info)
@@ -1196,17 +1508,245 @@ class CameraControlTab(QWidget):
         except Exception as e:
             error(f"处理相机帧失败: {e}", "CAMERA_UI")
 
-    def update_frame_count_in_table(self, camera_info: CameraInfo):
-        """更新表格中的帧数显示"""
+    def _get_detector(self):
+        """延迟加载或获取检测器"""
+        if hasattr(self, 'at_detector') and self.at_detector:
+            return self.at_detector
+        
+        # 尝试加载标定文件
+        calib_file = os.path.join(os.getcwd(), "AprilTagInterface", "calibration", "realsense_calib.npz")
+        mtx = None
+        dist = None
+        
+        if os.path.exists(calib_file):
+            try:
+                data = np.load(calib_file)
+                mtx = data['mtx']
+                dist = data.get('dist', np.zeros(4))
+                info(f"已加载相机标定: {calib_file}", "CAMERA_UI")
+            except Exception as e:
+                warning(f"加载标定文件失败: {e}，将使用默认内参", "CAMERA_UI")
+        
+        if mtx is None:
+            # 默认内参 (640x480)
+            mtx = np.array([[600, 0, 320], [0, 600, 240], [0, 0, 1]], dtype=np.float32)
+            dist = np.zeros(4)
+            
         try:
-            for row, cam_info in enumerate(self.camera_list):
-                if cam_info.camera_id == camera_info.camera_id:
-                    frame_item = self.camera_table.item(row, 2)
-                    if frame_item:
-                        frame_item.setText(f"{camera_info.frame_count}")
-                    break
+            self.at_detector = AprilTagDetector(tag_size_m=0.1, camera_matrix=mtx, dist_coeffs=dist)
+            return self.at_detector
         except Exception as e:
-            warning(f"更新帧数显示失败: {e}", "CAMERA_UI")
+            error(f"初始化AprilTagDetector失败: {e}", "CAMERA_UI")
+            return None
+
+    def on_record_standard_point(self):
+        """记录标准拍照点"""
+        if not self.current_camera or not self.current_camera.current_frame is not None:
+            QMessageBox.warning(self, "错误", "请先连接相机并开启预览")
+            return
+            
+        # 1. 检测Tag
+        detector = self._get_detector()
+        if not detector:
+            QMessageBox.critical(self, "错误", "无法初始化视觉检测器")
+            return
+            
+        results = detector.detect(self.current_camera.current_frame)
+        if not results:
+            QMessageBox.warning(self, "未检测到Tag", "在当前视野中未找到AprilTag")
+            return
+            
+        # 假设只关注第一个检测到的Tag
+        tag_res = results[0]
+        
+        # 2. 记录信息
+        self.std_tag_pose = {
+            'id': tag_res['id'],
+            'tvec': tag_res['tvec'],  # Camera系
+            'rvec': tag_res['rvec'],
+            'euler': tag_res['euler']
+        }
+        
+        # 3. 记录当前机械臂位姿 (如果有RobotService)
+        robot_pose = None
+        if self.robot_service:
+           robot_pose = self.robot_service.get_position()
+           
+        msg = (f"标准点已记录!\nTag ID: {tag_res['id']}\n"
+               f"距离: {tag_res['distance']:.3f}m\n"
+               f"Pos (Cam): {np.round(tag_res['tvec'], 3)}\n"
+               f"Euler: {np.round(tag_res['euler'], 1)}")
+               
+        if robot_pose:
+            self.std_robot_pose = robot_pose
+            msg += f"\nRobot Pose: {np.round(robot_pose, 3)}"
+            
+        info(f"标准点记录: {msg}", "CAMERA_UI")
+        QMessageBox.information(self, "成功", msg)
+        
+        # 拍照留底
+        self.save_snapshot(prefix="std_point_")
+
+    def on_follow_and_correct(self):
+        """跟随纠偏逻辑"""
+        if not self.std_tag_pose:
+            QMessageBox.warning(self, "错误", "请先记录标准点")
+            return
+            
+        if not self.current_camera or not self.current_camera.current_frame is not None:
+            QMessageBox.warning(self, "错误", "无图像数据")
+            return
+
+        # 0. 保存当前(纠偏前)的现场照片
+        self.save_snapshot(prefix="deviation_point_")
+            
+        # 1. 当前图像检测
+        detector = self._get_detector()
+        results = detector.detect(self.current_camera.current_frame)
+        if not results:
+            QMessageBox.warning(self, "失败", "未检测到Tag")
+            return
+            
+        # 找对应ID
+        target_id = self.std_tag_pose['id']
+        curr_res = next((r for r in results if r['id'] == target_id), None)
+        
+        if not curr_res:
+            QMessageBox.warning(self, "失败", f"未找到ID为 {target_id} 的Tag")
+            return
+            
+        # 2. 计算偏差 (Cam系)
+        # 这里的偏差是指：物体相对于标准位置移动了多少
+        # Tag在Cam系下坐标：T_c_t
+        # std: T_c_t_std
+        # curr: T_c_t_cur
+        # 移动量 D = T_c_t_cur - T_c_t_std
+        
+        tvec_std = self.std_tag_pose['tvec']
+        tvec_cur = curr_res['tvec']
+        
+        # 单位: 米 -> 转毫米
+        dx_mm = (tvec_cur[0] - tvec_std[0]) * 1000.0 
+        dy_mm = (tvec_cur[1] - tvec_std[1]) * 1000.0
+        
+        # 角度偏差 (Yaw)
+        # euler是 (roll, pitch, yaw) 还是其他？detector.py中是 ZYX顺序 -> x, y, z
+        # euler[2] 是 z轴旋转 (yaw)
+        yaw_std = self.std_tag_pose['euler'][2]
+        yaw_cur = curr_res['euler'][2]
+        dtheta_deg = yaw_cur - yaw_std
+        
+        # 打印偏差
+        info(f"视觉偏差计算: dx={dx_mm:.2f}mm, dy={dy_mm:.2f}mm, dr={dtheta_deg:.2f}deg", "CAMERA_UI")
+        
+        # 3. 计算机械臂新位姿
+        if not self.robot_service:
+            QMessageBox.warning(self, "错误", "未连接机械臂服务，无法跟随")
+            return
+            
+        current_robot_pose = self.robot_service.get_position()
+        if not current_robot_pose:
+            QMessageBox.warning(self, "错误", "无法获取机械臂当前位姿")
+            return
+
+        try:
+            # 加载手眼标定
+            hand_eye_file = os.path.join(os.getcwd(), "T_eye_in_hand_chessboard.json")
+            if not os.path.exists(hand_eye_file):
+                 QMessageBox.warning(self, "错误", f"找不到手眼标定文件: {hand_eye_file}")
+                 return
+                 
+            T_hand_eye = load_json_matrix(hand_eye_file, "T")
+            
+            # 使用 manual_correction_tool 计算 (注意：偏差输入是物体移动量)
+            # 如果物体向右移动(+x), 机械臂应该向右移动(+x)去追它?
+            # 视觉伺服通常是：我们要消除偏差。
+            # 偏差 = Cur - Std. 
+            # 如果物体X变大(右移)，我们也希望相机X变大(右移)去重新对准它。
+            # 所以 deviation = (dx, dy, dr) 正确。
+            
+            # robot_pose单位确认：roboarm通常使用 rad。is_degree参数需要确认
+            # manual_correction_tool默认接受度数/弧度混合？
+            # 我们的 elite_pose_to_matrix 函数，如果 input pose rx,ry,rz 是 rad，则 is_degree=False
+            
+            # log显示 robot_service.get_position() 返回的是 [x, y, z, rx, ry, rz] 且 rx,ry,rz 为度数
+            # 必须传给 calculate_correction 的 is_degree=True
+            
+            new_pose = calculate_correction(
+                current_robot_pose, 
+                [dx_mm, dy_mm, dtheta_deg], 
+                T_hand_eye, 
+                is_degree=True
+            )
+            
+            confirm_msg = (f"计算完成。\n"
+                           f"偏差: dx={dx_mm:.1f}, dy={dy_mm:.1f}, dr={dtheta_deg:.1f}\n"
+                           f"当前位姿: {np.round(current_robot_pose, 3)}\n"
+                           f"目标位姿: {np.round(new_pose, 3)}\n\n"
+                           f"是否移动机械臂？")
+                           
+            reply = QMessageBox.question(self, "跟随确认", confirm_msg, 
+                                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+                                        
+            if reply == QMessageBox.StandardButton.Yes:
+                # 标准移动 (move_to)
+                # 使用 robot_service 的统一接口，它最终调用 elite.py 的 move_to
+                # elite.py 的 move_to 内部会处理 C++控制器调用或脚本发送
+                # manual_correction_tool 返回 (mm, deg)，与 move_to 兼容
+                self.robot_service.move_to(*new_pose) 
+                
+                info("机械臂移动指令已发送", "CAMERA_UI")
+                
+                # 移动完成后拍照
+                # 由于这是异步移动，实际上我们应该等待移动完成。
+                # 简单起见，暂不阻塞等待
+                QTimer.singleShot(5000, lambda: self.save_snapshot(prefix="follow_result_"))
+                
+        except Exception as e:
+            error(f"计算或移动失败: {e}", "CAMERA_UI")
+            QMessageBox.critical(self, "异常", f"执行失败: {str(e)}")
+
+    def update_frame_count_in_table(self, camera_info: CameraInfo):
+        """更新帧数显示 (已废弃表格，仅打印日志或更新其他UI)"""
+        pass
+        # try:
+        #     # 表格已移除，此处暂时禁用
+        #     pass
+        # except Exception as e:
+        #     warning(f"更新帧数显示失败: {e}", "CAMERA_UI")
+
+    def save_snapshot(self, prefix="snapshot_"):
+        """保存当前画面快照"""
+        if not self.current_camera or not self.current_camera.current_frame is not None:
+             warning("无法保存快照：无相机或无图像", "CAMERA_UI")
+             return
+             
+        try:
+            import cv2
+            import time
+            frame = self.current_camera.current_frame
+            
+            # 使用配置中的媒体保存路径
+            from core.managers.app_config import AppConfigManager
+            config_manager = AppConfigManager()
+            save_dir = os.path.join(config_manager.paths_dir, "captures")
+            
+            os.makedirs(save_dir, exist_ok=True)
+            
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            filename = f"{prefix}{timestamp}.jpg"
+            filepath = os.path.join(save_dir, filename)
+            
+            # 颜色转换 RGB -> BGR (OpenCV使用BGR)
+            # 假设 current_frame 是 RGB
+            save_img = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+            cv2.imwrite(filepath, save_img)
+            
+            info(f"已保存快照: {filepath}", "CAMERA_UI")
+            return filepath
+        except Exception as e:
+            error(f"保存快照失败: {e}", "CAMERA_UI")
+            return None
 
     def capture_image(self):
         """拍照"""
@@ -1326,6 +1866,10 @@ class CameraControlTab(QWidget):
         try:
             info(f"启动相机预览: {camera_info.name}", "CAMERA_UI")
 
+            # 关键修复: 优先使用 camera_services 中已连接的服务实例
+            if camera_info.camera_id in self.camera_services:
+                self.streaming_services[camera_info.camera_id] = self.camera_services[camera_info.camera_id]
+
             # 确保相机有独立的CameraService实例
             if camera_info.camera_id not in self.streaming_services:
                 from core.services.camera_service import CameraService
@@ -1389,13 +1933,20 @@ class CameraControlTab(QWidget):
                     self.preview_update_timer = QTimer()
                     self.preview_update_timer.timeout.connect(self.update_preview_info)
                     self.preview_update_timer.start(100)  # 100ms更新一次
+                return True
             else:
                 error(f"相机预览启动失败: {camera_info.name} - {result.get('error')}", "CAMERA_UI")
+                return False
 
         except Exception as e:
             error(f"启动相机预览失败: {e}", "CAMERA_UI")
+            return False
 
     def update_camera_status_realtime(self):
+        """实时更新相机状态 (Stubbed)"""
+        pass
+
+    def _unused_update_camera_status_realtime(self):
         """实时更新相机状态"""
         try:
             if not hasattr(self, 'camera_table'):
@@ -1454,6 +2005,10 @@ class CameraControlTab(QWidget):
 
     def connect_selected_camera(self):
         """连接选中的相机"""
+        self.connect_current_selected_camera()
+
+    def _unused_connect_selected_camera(self):
+        """连接选中的相机"""
         selected_rows = self.camera_table.selectionModel().selectedRows()
         if not selected_rows:
             QMessageBox.warning(self, "未选择相机", "请先选择要连接的相机")
@@ -1468,31 +2023,23 @@ class CameraControlTab(QWidget):
             QMessageBox.warning(self, "未连接", "当前没有连接的相机")
             return
 
+        camera_id = self.current_camera.camera_id
+
         # 1. 停止预览
         self.stop_preview()
 
         # 2. 真正断开硬件连接
-        if self.current_camera.camera_id in self.streaming_services:
-            camera_service = self.streaming_services[self.current_camera.camera_id]
+        if camera_id in self.camera_services:
+            camera_service = self.camera_services[camera_id]
             camera_service.disconnect()
             info(f"已断开相机硬件连接: {self.current_camera.name}", "CAMERA_UI")
 
         # 重置连接状态
         self.current_camera.connected = False
 
-        # 更新表格状态
-        for row, camera_info in enumerate(self.camera_list):
-            if camera_info.camera_id == self.current_camera.camera_id:
-                status_item = self.camera_table.item(row, 1)
-                name_item = self.camera_table.item(row, 0)
-                if status_item:
-                    status_item.setText("🔴 未连接")
-                    status_item.setForeground(QColor('#f44336'))
-                    status_item.setFont(QFont('', 8, QFont.Weight.Bold))
-                if name_item:
-                    name_item.setForeground(QColor('#000000'))  # 重置为黑色
-                    name_item.setFont(QFont('', -1, QFont.Weight.Normal))  # 重置字体
-                break
+        # 更新UI
+        self.on_camera_combo_changed(self.camera_combo.currentIndex())
+
                 
     def disconnect_all(self):
         """断开所有相机连接（用于程序关闭时清理）"""
@@ -1536,20 +2083,11 @@ class CameraControlTab(QWidget):
             try:
                 # 更新时间戳
                 current_time = time.strftime("%H:%M:%S")
-                if hasattr(self, 'last_frame_time_label'):
-                    self.last_frame_time_label.setText(f"最后帧: {current_time}")
+                # if hasattr(self, 'last_frame_time_label'):
+                #     self.last_frame_time_label.setText(f"最后帧: {current_time}")
 
-                # 模拟FPS更新
-                import random
-                fps = f"{random.randint(25, 30)}fps"
-                fps_item = None
-                for row, camera_info in enumerate(self.camera_list):
-                    if camera_info.camera_id == self.current_camera.camera_id:
-                        fps_item = self.camera_table.item(row, 3)
-                        break
-
-                if fps_item:
-                    fps_item.setText(fps)
+                # 模拟FPS更新 (已不需要更新表格)
+                pass
 
             except Exception as e:
                 error(f"更新预览信息失败: {e}", "CAMERA_UI")
@@ -1689,6 +2227,9 @@ class CameraControlTab(QWidget):
             line_edit.setText(folder)
 
     def update_camera_table(self):
+        pass
+
+    def _unused_update_camera_table(self):
         """更新相机表格"""
         if not hasattr(self, 'camera_table'):
             return
@@ -1773,6 +2314,9 @@ class CameraControlTab(QWidget):
                 self.camera_table.setCellWidget(row, 3, no_preview_label)
 
     def disconnect_camera(self, row: int):
+        self.disconnect_current_camera()
+
+    def _unused_disconnect_camera(self, row: int):
         """断开指定相机"""
         if row >= len(self.camera_list):
             return
