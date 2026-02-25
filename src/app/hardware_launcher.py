@@ -101,13 +101,13 @@ class ApplicationLauncher:
             try:
                 from ui_libs.hardware_widget.hardware_management_main_window import HardwareManagementMainWindow
 
-                main_window = HardwareManagementMainWindow(
+                self.main_window = HardwareManagementMainWindow(
                     device_manager=self.container.resolve("device_manager"),
                     robot_service=robot_service,
                     camera_service=camera_service,
                     light_service=light_service
                 )
-                main_window.show()
+                self.main_window.show()
 
                 info("Main window UI loaded successfully", "LAUNCHER")
 
@@ -127,13 +127,13 @@ class ApplicationLauncher:
         try:
             from ui.main_window_v4 import MainWindow
 
-            legacy_window = MainWindow(
+            self.legacy_window = MainWindow(
                 device_manager=self.container.resolve("device_manager"),
                 robot_service=robot_service,
                 camera_service=camera_service,
                 light_service=light_service
             )
-            legacy_window.show()
+            self.legacy_window.show()
 
             info("Legacy UI loaded as final fallback", "LAUNCHER")
 

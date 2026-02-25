@@ -1964,7 +1964,7 @@ class VMCCameraNode(VMCHardwareNode):
 
             # Create dialog
             dialog = QDialog()
-            dialog.setWindowTitle(f"相机管理 - {self.selected_hardware_id or '通用相机'}")
+            dialog.setWindowTitle(f"柔性拍摄 - {self.selected_hardware_id or '通用相机'}")
             dialog.setMinimumSize(800, 600)
             
             # Store dialog reference

@@ -23,14 +23,27 @@ from .camera_preview import PreviewLabel
 from .save_path_dialog import SavePathDialog
 import sys
 import os
-try:
-    sys.path.append(os.getcwd())
-    from manual_correction_tool import calculate_correction, load_json_matrix
-    from src.algorithms.vision.apriltag_detector import AprilTagDetector
-    VISION_ALGO_AVAILABLE = True
-except ImportError as e:
-    warning(f"视觉算法模块导入失败: {e}", "CAMERA_UI")
-    VISION_ALGO_AVAILABLE = False
+
+# 延迟导入视觉算法模块以避免初始化时的循环依赖
+VISION_ALGO_AVAILABLE = False
+_vision_import_error = None
+
+# 检查环境变量，允许用户禁用视觉伺服功能进行调试
+if os.environ.get('DISABLE_VISION_SERVO', '').lower() in ('1', 'true', 'yes'):
+    _vision_import_error = "用户通过环境变量禁用"
+else:
+    try:
+        sys.path.append(os.getcwd())
+        from manual_correction_tool import calculate_correction, load_json_matrix
+        from src.algorithms.vision.apriltag_detector import AprilTagDetector
+        from multi_point_servo import MultiPointServo, ServoRecipe, save_recipe, load_recipe, list_recipes, RECIPE_DIR
+        VISION_ALGO_AVAILABLE = True
+    except ImportError as e:
+        _vision_import_error = str(e)
+        VISION_ALGO_AVAILABLE = False
+    except Exception as e:
+        _vision_import_error = str(e)
+        VISION_ALGO_AVAILABLE = False
 
 # 导入相机驱动
 CAMERA_DRIVERS_AVAILABLE = False
@@ -67,6 +80,207 @@ def check_camera_drivers():
 
 CAMERA_DRIVERS_AVAILABLE = check_camera_drivers()
 
+
+class FloatingJogDialog(QDialog):
+    """可拖动的浮动机械臂轴向控制窗口（长按持续运动）"""
+
+    def __init__(self, robot_service, parent=None):
+        super().__init__(parent)
+        self.robot_service = robot_service
+        self.setWindowTitle("机械臂控制")
+        self.setWindowFlags(
+            Qt.WindowType.Tool | Qt.WindowType.WindowStaysOnTopHint
+        )
+        self.setFixedSize(280, 340)
+        self._jog_timer = QTimer(self)
+        self._jog_timer.setInterval(200)  # 每200ms发送一次移动指令
+        self._jog_timer.timeout.connect(self._do_jog_step)
+        self._jog_axis = None
+        self._jog_direction = 0
+        self._build_ui()
+
+    # ---------- UI ----------
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+
+        title = QLabel("轴向控制 (长按移动)")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        title.setStyleSheet("font-weight:bold;")
+        layout.addWidget(title)
+
+        grid = QGridLayout()
+        grid.setSpacing(8)
+
+        # 线性轴控制 (X/Y/Z)
+        linear_label = QLabel("线性轴 (X/Y/Z)")
+        linear_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        linear_label.setStyleSheet("font-size:11px; color:#666; font-weight:bold;")
+        grid.addWidget(linear_label, 0, 0, 1, 3)
+        
+        # 线性轴按钮布局：3列3行，十字形排列
+        #       Y+
+        #  X-   --   X+
+        #       Y-
+        #  Z-        Z+
+        directions = [
+            ("Y+", 1, 1),  # 上
+            ("X-", 2, 0), ("X+", 2, 2),  # 左右
+            ("Y-", 3, 1),  # 下
+            ("Z-", 4, 0), ("Z+", 4, 2),  # Z轴
+        ]
+
+        for text, row, col in directions:
+            btn = QPushButton(text)
+            btn.setMinimumSize(70, 45)
+            btn.setStyleSheet(
+                "QPushButton{background-color:#2196F3;color:white;border:none;"
+                "border-radius:5px;font-weight:bold;font-size:14px;}"
+                "QPushButton:hover{background-color:#1976D2;}"
+                "QPushButton:pressed{background-color:#0D47A1;}"
+            )
+            btn.setAutoRepeat(False)
+            btn.pressed.connect(lambda t=text: self._on_btn_pressed(t))
+            btn.released.connect(self._on_btn_released)
+            grid.addWidget(btn, row, col)
+        
+        # Z轴标签
+        z_label = QLabel("Z:")
+        z_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        z_label.setStyleSheet("font-size:12px; color:#666;")
+        grid.addWidget(z_label, 4, 1)
+
+        # 分隔线
+        separator = QFrame()
+        separator.setFrameShape(QFrame.Shape.HLine)
+        separator.setStyleSheet("background-color: #ddd;")
+        separator.setFixedHeight(2)
+        grid.addWidget(separator, 5, 0, 1, 3)
+        
+        # 旋转轴控制 (RX/RY/RZ)
+        rotation_label = QLabel("旋转轴 (RX/RY/RZ)")
+        rotation_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        rotation_label.setStyleSheet("font-size:11px; color:#666; font-weight:bold;")
+        grid.addWidget(rotation_label, 6, 0, 1, 3)
+        
+        # 旋转轴按钮布局：3列2行，每行一个轴的+/-
+        rotation_directions = [
+            ("RX-", 7, 0), ("RX+", 7, 2),
+            ("RY-", 8, 0), ("RY+", 8, 2),
+            ("RZ-", 9, 0), ("RZ+", 9, 2),
+        ]
+        
+        axis_labels = [("RX:", 7, 1), ("RY:", 8, 1), ("RZ:", 9, 1)]
+        for label_text, row, col in axis_labels:
+            lbl = QLabel(label_text)
+            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lbl.setStyleSheet("font-size:10px; color:#666;")
+            grid.addWidget(lbl, row, col)
+
+        for text, row, col in rotation_directions:
+            btn = QPushButton(text)
+            btn.setMinimumSize(70, 40)
+            btn.setStyleSheet(
+                "QPushButton{background-color:#9C27B0;color:white;border:none;"
+                "border-radius:5px;font-weight:bold;font-size:13px;}"
+                "QPushButton:hover{background-color:#7B1FA2;}"
+                "QPushButton:pressed{background-color:#6A1B9A;}"
+            )
+            btn.setAutoRepeat(False)
+            btn.pressed.connect(lambda t=text: self._on_btn_pressed(t))
+            btn.released.connect(self._on_btn_released)
+            grid.addWidget(btn, row, col)
+
+        layout.addLayout(grid)
+
+        # 速度显示
+        self._speed_label = QLabel("速度: --")
+        self._speed_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._speed_label.setStyleSheet("color:#666; font-size:11px; margin-top:4px;")
+        layout.addWidget(self._speed_label)
+
+        hint = QLabel("速度取自机械臂控制面板设定")
+        hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        hint.setStyleSheet("color:#999; font-size:10px;")
+        layout.addWidget(hint)
+
+    # ---------- 长按逻辑 ----------
+    def _on_btn_pressed(self, text: str):
+        """按下按钮开始连续点动"""
+        if not self.robot_service:
+            return
+            
+        try:
+            # 停止之前的定时器如果有
+            if hasattr(self, '_jog_timer') and self._jog_timer.isActive():
+                self._jog_timer.stop()
+            
+            # 直接使用按钮文本作为指令 (e.g. "X+", "RX-")
+            jog_cmd = text  # 完整的指令，包括轴名和方向
+            
+            # 获取速度
+            speed = self._get_speed()
+            self._speed_label.setText(f"速度: {speed}%")
+            
+            # 设置速度
+            self.robot_service.set_speed(speed)
+            
+            # 开始连续运动
+            self.robot_service.start_jogging(jog_cmd)
+            
+        except Exception as e:
+            warning(f"开始点动失败: {e}", "CAMERA_UI")
+
+    def _on_btn_released(self):
+        """释放按钮停止运动"""
+        if not self.robot_service:
+            return
+            
+        try:
+            # 停止连续运动
+            self.robot_service.stop_jogging()
+            
+            # 确保定时器停止
+            if hasattr(self, '_jog_timer'):
+                self._jog_timer.stop()
+                
+        except Exception as e:
+            warning(f"停止点动失败: {e}", "CAMERA_UI")
+
+    def _get_speed(self) -> int:
+        """从机械臂控制界面获取当前速度"""
+        try:
+            # 尝试从主窗口找到 robot_tab 的 jog_speed_slider
+            main_win = self.parent()
+            for _ in range(10):  # 最多向上查找10层
+                if main_win is None:
+                    break
+                if hasattr(main_win, 'robot_tab') and hasattr(main_win.robot_tab, 'jog_speed_slider'):
+                    return main_win.robot_tab.jog_speed_slider.value()
+                main_win = main_win.parent()
+        except Exception:
+            pass
+        return 30  # 默认30%
+
+    def _do_jog_step(self):
+        """执行一步点动移动"""
+        if not self._jog_axis or not self.robot_service:
+            return
+        try:
+            speed = self._get_speed()
+            self._speed_label.setText(f"速度: {speed}%")
+            step_mm = max(1.0, speed / 10.0)  # 速度越大步长越大, 范围 1~10mm
+            distance = step_mm * self._jog_direction
+            self.robot_service.jog_move(self._jog_axis, speed, distance)
+        except RuntimeError:
+            # 对象已被删除
+            self._jog_timer.stop()
+        except Exception as e:
+            # 任何其他异常也停止定时器
+            warning(f"点动移动失败: {e}", "CAMERA_UI")
+            self._jog_timer.stop()
+
+
 class CameraControlTab(QWidget):
     """相机控制标签页 - 最终版"""
 
@@ -99,6 +313,13 @@ class CameraControlTab(QWidget):
         self.path_list = []  # 存储所有路径的列表
         self._empty_current_path = None  # 缓存空路径对象
         
+        # ======= 多点位视觉伺服状态 =======
+        self._servo_controller: Optional['MultiPointServo'] = None
+        self._servo_teaching = False       # 是否处于示教模式
+        self._servo_recipe: Optional['ServoRecipe'] = None  # 当前配方
+        self._servo_std_recorded = False   # 标准点是否已记录
+        self._servo_running = False        # 生产流程是否正在运行
+        
         # VMC节点同步功能
         self.vmc_node = vmc_node  # 引用VMC相机节点
         self.vmc_callback = vmc_callback  # 回调函数用于同步selected_hardware_id
@@ -124,6 +345,13 @@ class CameraControlTab(QWidget):
         self._auto_save_timer = QTimer()
         self._auto_save_timer.setSingleShot(True)
         self._auto_save_timer.timeout.connect(self._trigger_auto_save)
+        
+        # 报告视觉算法模块导入状态
+        if not VISION_ALGO_AVAILABLE and _vision_import_error:
+            warning(f"视觉算法模块导入失败: {_vision_import_error}", "CAMERA_UI")
+        
+        # 初始化完成标志
+        debug("CameraControlTab 初始化完成", "CAMERA_UI")
     
     def _trigger_parameter_change_auto_save(self):
         """触发参数变更自动保存（防抖机制）"""
@@ -247,6 +475,13 @@ class CameraControlTab(QWidget):
         self.connect_btn.setMinimumWidth(80)
         self.connect_btn.clicked.connect(self.toggle_camera_connection)
         control_layout.addWidget(self.connect_btn)
+
+        # 机械臂控制浮窗按钮
+        self.btn_floating_jog = QPushButton("🤖 机械臂控制")
+        self.btn_floating_jog.setStyleSheet("background-color: #607D8B; color: white;")
+        self.btn_floating_jog.setMinimumWidth(100)
+        self.btn_floating_jog.clicked.connect(self._open_floating_jog)
+        control_layout.addWidget(self.btn_floating_jog)
         
         layout.addLayout(control_layout)
         
@@ -400,23 +635,102 @@ class CameraControlTab(QWidget):
         record_group.setLayout(record_layout)
         layout.addWidget(record_group)
 
-        # 视觉伺服控制 (AprilTag)
-        if VISION_ALGO_AVAILABLE:
-            servo_group = QGroupBox("视觉伺服 (AprilTag 0.1m)")
-            servo_layout = QGridLayout()
+        # ===================== 多点位视觉伺服 =====================
+        # 环境变量控制：ENABLE_VISION_SERVO=1 才启用（默认禁用以诊断问题）
+        enable_servo_ui = os.environ.get('ENABLE_VISION_SERVO', '0').lower() in ('1', 'true', 'yes')
+        
+        if VISION_ALGO_AVAILABLE and enable_servo_ui:
+            try:
+                servo_group = QGroupBox("多点位视觉伺服 (AprilTag)")
+                servo_main_layout = QVBoxLayout()
 
-            self.btn_record_std = QPushButton("🚩 记录标准点")
-            self.btn_record_std.clicked.connect(self.on_record_standard_point)
-            self.btn_record_std.setStyleSheet("background-color: #9C27B0; color: white;")
-            
-            self.btn_follow = QPushButton("🎯 跟随纠偏")
-            self.btn_follow.clicked.connect(self.on_follow_and_correct)
-            self.btn_follow.setStyleSheet("background-color: #2196F3; color: white;")
+                # ---- 示教区 ----
+                teach_label = QLabel("--- 示教 ---")
+                teach_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                teach_label.setStyleSheet("font-weight:bold; color:#9C27B0;")
+                servo_main_layout.addWidget(teach_label)
 
-            servo_layout.addWidget(self.btn_record_std, 0, 0)
-            servo_layout.addWidget(self.btn_follow, 0, 1)
-            servo_group.setLayout(servo_layout)
-            layout.addWidget(servo_group)
+                teach_row1 = QHBoxLayout()
+                self.btn_servo_start_teach = QPushButton("开始示教")
+                self.btn_servo_start_teach.setStyleSheet("background-color: #9C27B0; color: white;")
+                self.btn_servo_start_teach.clicked.connect(self.on_servo_start_teaching)
+                teach_row1.addWidget(self.btn_servo_start_teach)
+
+                self.btn_servo_record_std = QPushButton("记录标准点")
+                self.btn_servo_record_std.setEnabled(False)
+                self.btn_servo_record_std.clicked.connect(self.on_servo_record_std)
+                teach_row1.addWidget(self.btn_servo_record_std)
+                servo_main_layout.addLayout(teach_row1)
+
+                teach_row2 = QHBoxLayout()
+                self.btn_servo_add_point = QPushButton("添加拍照点")
+                self.btn_servo_add_point.setEnabled(False)
+                self.btn_servo_add_point.clicked.connect(self.on_servo_add_point)
+                teach_row2.addWidget(self.btn_servo_add_point)
+
+                self.btn_servo_finish_teach = QPushButton("完成示教")
+                self.btn_servo_finish_teach.setEnabled(False)
+                self.btn_servo_finish_teach.setStyleSheet("background-color: #4CAF50; color: white;")
+                self.btn_servo_finish_teach.clicked.connect(self.on_servo_finish_teaching)
+                teach_row2.addWidget(self.btn_servo_finish_teach)
+                servo_main_layout.addLayout(teach_row2)
+
+                # ---- 生产区 ----
+                prod_label = QLabel("--- 生产 ---")
+                prod_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                prod_label.setStyleSheet("font-weight:bold; color:#2196F3;")
+                servo_main_layout.addWidget(prod_label)
+
+                prod_row1 = QHBoxLayout()
+                self.servo_recipe_combo = QComboBox()
+                self.servo_recipe_combo.setMinimumWidth(120)
+                prod_row1.addWidget(self.servo_recipe_combo)
+
+                self.btn_servo_refresh_recipes = QPushButton("刷新")
+                self.btn_servo_refresh_recipes.setMaximumWidth(50)
+                self.btn_servo_refresh_recipes.clicked.connect(self._refresh_recipe_list)
+                prod_row1.addWidget(self.btn_servo_refresh_recipes)
+                servo_main_layout.addLayout(prod_row1)
+
+                prod_row2 = QHBoxLayout()
+                self.btn_servo_detect = QPushButton("检测偏差")
+                self.btn_servo_detect.setStyleSheet("background-color: #2196F3; color: white;")
+                self.btn_servo_detect.clicked.connect(self.on_servo_detect_deviation)
+                prod_row2.addWidget(self.btn_servo_detect)
+
+                self.btn_servo_execute = QPushButton("执行拍照")
+                self.btn_servo_execute.setEnabled(False)
+                self.btn_servo_execute.setStyleSheet("background-color: #FF9800; color: white;")
+                self.btn_servo_execute.clicked.connect(self.on_servo_execute_production)
+                prod_row2.addWidget(self.btn_servo_execute)
+                servo_main_layout.addLayout(prod_row2)
+
+                # ---- 状态 ----
+                self.servo_status_label = QLabel("就绪")
+                self.servo_status_label.setStyleSheet("color: #666; font-size: 11px;")
+                servo_main_layout.addWidget(self.servo_status_label)
+
+                servo_group.setLayout(servo_main_layout)
+                layout.addWidget(servo_group)
+
+                # 延迟加载配方列表，避免初始化时目录不存在导致错误
+                # 使用弱引用确保对象销毁时不会调用
+                def safe_refresh():
+                    try:
+                        if self and hasattr(self, 'servo_recipe_combo'):
+                            self._refresh_recipe_list()
+                    except RuntimeError:
+                        # 对象已被删除，忽略
+                        pass
+                    except Exception as e:
+                        warning(f"延迟加载配方列表失败: {e}", "CAMERA_UI")
+                
+                QTimer.singleShot(100, safe_refresh)
+            except Exception as e:
+                error(f"创建视觉伺服UI失败: {e}", "CAMERA_UI")
+                err_label = QLabel(f"视觉伺服UI加载失败: {e}")
+                err_label.setStyleSheet("color: red;")
+                layout.addWidget(err_label)
         
         # 路径列表管理
         list_group = QGroupBox("路径列表")
@@ -1238,7 +1552,7 @@ class CameraControlTab(QWidget):
         layout.addLayout(form_layout)
 
         # 按钮
-        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButton.StandardButton.Cancel)
+        button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         button_box.accepted.connect(dialog.accept)
         button_box.rejected.connect(dialog.reject)
         layout.addWidget(button_box)
@@ -1706,6 +2020,503 @@ class CameraControlTab(QWidget):
             error(f"计算或移动失败: {e}", "CAMERA_UI")
             QMessageBox.critical(self, "异常", f"执行失败: {str(e)}")
 
+    # ===================== 浮动机械臂控制窗口 =====================
+
+    def _open_floating_jog(self):
+        """打开/激活浮动机械臂控制窗口"""
+        try:
+            if not self.robot_service:
+                QMessageBox.warning(self, "错误", "未连接机械臂服务")
+                return
+            if hasattr(self, '_floating_jog_dlg') and self._floating_jog_dlg and self._floating_jog_dlg.isVisible():
+                self._floating_jog_dlg.activateWindow()
+                return
+            self._floating_jog_dlg = FloatingJogDialog(self.robot_service, parent=self)
+            self._floating_jog_dlg.show()
+        except Exception as e:
+            error(f"打开机械臂控制窗口失败: {e}", "CAMERA_UI")
+            QMessageBox.critical(self, "错误", f"无法打开机械臂控制窗口: {e}")
+
+    # ===================== 多点位视觉伺服 — 辅助 =====================
+
+    def _refresh_recipe_list(self):
+        """刷新配方下拉列表"""
+        if not VISION_ALGO_AVAILABLE:
+            return
+        try:
+            if not hasattr(self, 'servo_recipe_combo'):
+                return
+            self.servo_recipe_combo.clear()
+            # 确保目录存在
+            os.makedirs(RECIPE_DIR, exist_ok=True)
+            recipes = list_recipes()
+            for fname in recipes:
+                self.servo_recipe_combo.addItem(fname.replace('.json', ''), fname)
+            if not recipes:
+                self.servo_recipe_combo.addItem("(无配方)", "")
+        except Exception as e:
+            warning(f"刷新配方列表失败: {e}", "CAMERA_UI")
+
+    def _set_servo_status(self, text: str, color: str = "#666"):
+        """更新伺服状态标签"""
+        if hasattr(self, 'servo_status_label'):
+            self.servo_status_label.setText(text)
+            self.servo_status_label.setStyleSheet(f"color: {color}; font-size: 11px;")
+
+    def _set_teach_buttons(self, start=True, record_std=False, add_point=False, finish=False):
+        """批量设置示教阶段按钮状态"""
+        if hasattr(self, 'btn_servo_start_teach'):
+            self.btn_servo_start_teach.setEnabled(start)
+        if hasattr(self, 'btn_servo_record_std'):
+            self.btn_servo_record_std.setEnabled(record_std)
+        if hasattr(self, 'btn_servo_add_point'):
+            self.btn_servo_add_point.setEnabled(add_point)
+        if hasattr(self, 'btn_servo_finish_teach'):
+            self.btn_servo_finish_teach.setEnabled(finish)
+
+    # ===================== 多点位视觉伺服 — 示教流程 =====================
+
+    def on_servo_start_teaching(self):
+        """开始示教：创建控制器和空配方"""
+        name, ok = QInputDialog.getText(self, "新配方", "请输入配方名称:",
+                                        text=f"配方_{time.strftime('%m%d_%H%M')}")
+        if not ok or not name.strip():
+            return
+
+        try:
+            self._servo_controller = MultiPointServo()
+            self._servo_recipe = self._servo_controller.start_teaching(name.strip())
+            self._servo_teaching = True
+            self._servo_std_recorded = False
+
+            self._set_teach_buttons(start=False, record_std=True, add_point=False, finish=False)
+            self._set_servo_status(f"示教中：请移动到标准位置后点击「记录标准点」", "#9C27B0")
+            info(f"开始示教配方: {name}", "CAMERA_UI")
+        except Exception as e:
+            error(f"开始示教失败: {e}", "CAMERA_UI")
+            QMessageBox.critical(self, "错误", f"初始化失败: {e}")
+
+    def on_servo_record_std(self):
+        """示教阶段 — 记录标准点"""
+        if not self._servo_teaching or not self._servo_controller:
+            return
+
+        # 检查相机
+        if not self.current_camera or self.current_camera.current_frame is None:
+            QMessageBox.warning(self, "错误", "请先连接相机并开启预览")
+            return
+
+        # 检测 AprilTag
+        detector = self._get_detector()
+        if not detector:
+            QMessageBox.critical(self, "错误", "无法初始化视觉检测器")
+            return
+
+        results = detector.detect(self.current_camera.current_frame)
+        if not results:
+            QMessageBox.warning(self, "未检测到", "当前画面未找到 AprilTag")
+            return
+
+        tag_res = results[0]
+
+        # 获取机械臂位姿
+        if not self.robot_service:
+            QMessageBox.warning(self, "错误", "未连接机械臂")
+            return
+        robot_pose = self.robot_service.get_position()
+        if robot_pose is None:
+            QMessageBox.warning(self, "错误", "获取机械臂位姿失败")
+            return
+
+        # 记录
+        ok = self._servo_controller.record_standard_point(robot_pose, tag_res)
+        if not ok:
+            QMessageBox.warning(self, "错误", "记录标准点失败")
+            return
+
+        self._servo_std_recorded = True
+        self.save_snapshot(prefix="servo_std_")
+
+        self._set_teach_buttons(start=False, record_std=False, add_point=True, finish=True)
+        self._set_servo_status(
+            f"标准点已记录 (Tag#{tag_res['id']}, d={tag_res['distance']:.3f}m)。请移动到第一个拍照点位。",
+            "#4CAF50"
+        )
+        # 详细日志：标准点位姿
+        info(f"========== 标准点记录 ==========", "CAMERA_UI")
+        info(f"  Tag ID: {tag_res['id']}, 距离: {tag_res['distance']:.3f}m", "CAMERA_UI")
+        info(f"  标准点机械臂位姿 (位姿1):", "CAMERA_UI")
+        info(f"    X={robot_pose[0]:.3f} Y={robot_pose[1]:.3f} Z={robot_pose[2]:.3f} mm", "CAMERA_UI")
+        info(f"    RX={robot_pose[3]:.3f} RY={robot_pose[4]:.3f} RZ={robot_pose[5]:.3f} deg", "CAMERA_UI")
+        info(f"=================================", "CAMERA_UI")
+
+    def on_servo_add_point(self):
+        """示教阶段 — 添加普通拍照点位"""
+        if not self._servo_teaching or not self._servo_controller or not self._servo_std_recorded:
+            return
+
+        if not self.robot_service:
+            QMessageBox.warning(self, "错误", "未连接机械臂")
+            return
+
+        robot_pose = self.robot_service.get_position()
+        if robot_pose is None:
+            QMessageBox.warning(self, "错误", "获取机械臂位姿失败")
+            return
+
+        n = len(self._servo_recipe.photo_points) + 1
+        default_name = f"拍照点{n}"
+        name, ok = QInputDialog.getText(self, "点位名称", "请输入拍照点名称:", text=default_name)
+        if not ok or not name.strip():
+            return
+
+        # 拍照留底
+        snap = self.save_snapshot(prefix=f"servo_pt{n}_")
+
+        count = self._servo_controller.add_photo_point(name.strip(), robot_pose, snap)
+
+        self._set_servo_status(f"已添加 {count} 个拍照点位。继续添加或点击「完成示教」。", "#9C27B0")
+        # 详细日志：拍照点位姿
+        info(f"========== 添加拍照点 [{name}] ==========", "CAMERA_UI")
+        info(f"  示教时机械臂位姿:", "CAMERA_UI")
+        info(f"    X={robot_pose[0]:.3f} Y={robot_pose[1]:.3f} Z={robot_pose[2]:.3f} mm", "CAMERA_UI")
+        info(f"    RX={robot_pose[3]:.3f} RY={robot_pose[4]:.3f} RZ={robot_pose[5]:.3f} deg", "CAMERA_UI")
+        info(f"  当前总点位数: {count}", "CAMERA_UI")
+        info(f"=========================================", "CAMERA_UI")
+
+    def on_servo_finish_teaching(self):
+        """示教阶段 — 完成示教"""
+        if not self._servo_teaching or not self._servo_controller:
+            return
+
+        if not self._servo_std_recorded:
+            QMessageBox.warning(self, "错误", "标准点未记录")
+            return
+
+        if not self._servo_recipe.photo_points:
+            QMessageBox.warning(self, "错误", "至少添加一个拍照点位")
+            return
+
+        try:
+            recipe = self._servo_controller.finish_teaching()
+            self._servo_teaching = False
+
+            # 恢复按钮
+            self._set_teach_buttons(start=True, record_std=False, add_point=False, finish=False)
+            self._refresh_recipe_list()
+
+            # 自动选中新配方
+            idx = self.servo_recipe_combo.findData(f"{recipe.id}.json")
+            if idx >= 0:
+                self.servo_recipe_combo.setCurrentIndex(idx)
+
+            self._set_servo_status(
+                f"示教完成: {recipe.name} ({len(recipe.photo_points)}个点位)", "#4CAF50"
+            )
+            
+            # 机械臂回到标准点位姿（位姿1）
+            std_pose = recipe.std_robot_pose
+            if std_pose and self.robot_service:
+                info(f"示教完成，机械臂回到标准点位姿: {np.round(std_pose, 2)}", "CAMERA_UI")
+                self._set_servo_status("正在回到标准点...", "#FF9800")
+                try:
+                    self.robot_service.move_to(*std_pose)
+                    # 延迟后更新状态
+                    QTimer.singleShot(3000, lambda: self._set_servo_status(
+                        f"示教完成: {recipe.name} ({len(recipe.photo_points)}个点位)，已回到标准点", "#4CAF50"
+                    ))
+                except Exception as move_err:
+                    warning(f"回到标准点失败: {move_err}", "CAMERA_UI")
+
+            QMessageBox.information(
+                self, "示教完成",
+                f"配方「{recipe.name}」已保存。\n"
+                f"包含 {len(recipe.photo_points)} 个拍照点位。\n"
+                f"机械臂将回到标准点位姿。\n"
+                f"请切换到「生产」模式使用。"
+            )
+        except Exception as e:
+            error(f"完成示教失败: {e}", "CAMERA_UI")
+            QMessageBox.critical(self, "错误", f"完成示教失败: {e}")
+
+    # ===================== 多点位视觉伺服 — 生产流程 =====================
+
+    def on_servo_detect_deviation(self):
+        """生产阶段 — 加载配方并在标准位置检测偏差"""
+        # 加载选中的配方
+        fname = self.servo_recipe_combo.currentData()
+        if not fname:
+            QMessageBox.warning(self, "错误", "请先选择一个配方")
+            return
+
+        filepath = os.path.join(RECIPE_DIR, fname)
+        if not os.path.exists(filepath):
+            QMessageBox.warning(self, "错误", f"配方文件不存在: {fname}")
+            return
+
+        try:
+            if self._servo_controller is None:
+                self._servo_controller = MultiPointServo()
+            self._servo_controller.load(filepath)
+            recipe = self._servo_controller.current_recipe
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"加载配方失败: {e}")
+            return
+
+        # 提示用户：机械臂应在标准位置附近
+        reply = QMessageBox.question(
+            self, "检测偏差",
+            f"配方: {recipe.name}\n"
+            f"包含 {len(recipe.photo_points)} 个拍照点位\n\n"
+            f"请确认机械臂已在标准位置附近，然后点击「是」开始检测。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        # 检测 AprilTag
+        if not self.current_camera or self.current_camera.current_frame is None:
+            QMessageBox.warning(self, "错误", "请先连接相机并开启预览")
+            return
+
+        detector = self._get_detector()
+        if not detector:
+            QMessageBox.critical(self, "错误", "无法初始化视觉检测器")
+            return
+
+        results = detector.detect(self.current_camera.current_frame)
+        if not results:
+            QMessageBox.warning(self, "未检测到", "当前画面未找到 AprilTag")
+            return
+
+        # 尝试匹配标准点 tag id
+        std_tag_id = recipe.std_tag_data.get('id', 0) if recipe.std_tag_data else 0
+        tag_res = next((r for r in results if r['id'] == std_tag_id), None)
+        if tag_res is None:
+            tag_res = results[0]
+            warning(f"未找到 ID={std_tag_id} 的 Tag，使用第一个检测结果 (ID={tag_res['id']})", "CAMERA_UI")
+
+        # 获取机械臂当前位姿
+        if not self.robot_service:
+            QMessageBox.warning(self, "错误", "未连接机械臂")
+            return
+        robot_pose = self.robot_service.get_position()
+        if robot_pose is None:
+            QMessageBox.warning(self, "错误", "获取机械臂位姿失败")
+            return
+
+        # 计算新位姿
+        try:
+            new_poses = self._servo_controller.compute_new_poses(robot_pose, tag_res)
+        except Exception as e:
+            QMessageBox.critical(self, "计算错误", f"偏差传播失败: {e}")
+            return
+
+        # 保存计算结果到临时属性供执行使用
+        self._servo_new_poses = new_poses
+        self._servo_recipe = recipe
+
+        # 构建偏差摘要
+        std_T_old = np.array(recipe.T_base_tag_std)
+        from multi_point_servo import compute_T_base_tag
+        from scipy.spatial.transform import Rotation as R
+        T_new = compute_T_base_tag(
+            robot_pose, np.array(tag_res['tvec']),
+            np.array(tag_res['rvec']), self._servo_controller.T_flange_cam, True
+        )
+        delta_t = T_new[:3, 3] - std_T_old[:3, 3]
+        
+        # 计算旋转偏差 (从旋转矩阵提取欧拉角)
+        R_old = std_T_old[:3, :3]
+        R_new = T_new[:3, :3]
+        R_delta = R_new @ R_old.T  # 相对旋转
+        try:
+            delta_euler = R.from_matrix(R_delta).as_euler('xyz', degrees=True)
+        except:
+            delta_euler = [0, 0, 0]
+        
+        # 详细日志
+        info(f"========== 偏差计算结果 ==========", "CAMERA_UI")
+        info(f"  当前机械臂位姿 (标准位置):", "CAMERA_UI")
+        info(f"    X={robot_pose[0]:.3f} Y={robot_pose[1]:.3f} Z={robot_pose[2]:.3f} mm", "CAMERA_UI")
+        info(f"    RX={robot_pose[3]:.3f} RY={robot_pose[4]:.3f} RZ={robot_pose[5]:.3f} deg", "CAMERA_UI")
+        info(f"  原标准点位姿:", "CAMERA_UI")
+        std_pose = recipe.std_robot_pose
+        info(f"    X={std_pose[0]:.3f} Y={std_pose[1]:.3f} Z={std_pose[2]:.3f} mm", "CAMERA_UI")
+        info(f"    RX={std_pose[3]:.3f} RY={std_pose[4]:.3f} RZ={std_pose[5]:.3f} deg", "CAMERA_UI")
+        info(f"  Tag位置偏差 (新-旧):", "CAMERA_UI")
+        info(f"    dX={delta_t[0]:.3f} dY={delta_t[1]:.3f} dZ={delta_t[2]:.3f} mm", "CAMERA_UI")
+        info(f"  Tag旋转偏差 (欧拉角):", "CAMERA_UI")
+        info(f"    dRX={delta_euler[0]:.3f} dRY={delta_euler[1]:.3f} dRZ={delta_euler[2]:.3f} deg", "CAMERA_UI")
+        info(f"  --------- 新计算的拍照点位姿 ---------", "CAMERA_UI")
+        for pp in recipe.photo_points:
+            info(f"  [{pp.name}] 原示教位姿:", "CAMERA_UI")
+            info(f"    X={pp.pose[0]:.3f} Y={pp.pose[1]:.3f} Z={pp.pose[2]:.3f} mm", "CAMERA_UI")
+            info(f"    RX={pp.pose[3]:.3f} RY={pp.pose[4]:.3f} RZ={pp.pose[5]:.3f} deg", "CAMERA_UI")
+        for name, pose in new_poses:
+            info(f"  [{name}] 新计算位姿:", "CAMERA_UI")
+            info(f"    X={pose[0]:.3f} Y={pose[1]:.3f} Z={pose[2]:.3f} mm", "CAMERA_UI")
+            info(f"    RX={pose[3]:.3f} RY={pose[4]:.3f} RZ={pose[5]:.3f} deg", "CAMERA_UI")
+        info(f"=========================================", "CAMERA_UI")
+        
+        summary = (f"检测完成 (Tag#{tag_res['id']})\n"
+                   f"位置偏差: dX={delta_t[0]:.2f} dY={delta_t[1]:.2f} dZ={delta_t[2]:.2f} mm\n"
+                   f"旋转偏差: dRX={delta_euler[0]:.2f} dRY={delta_euler[1]:.2f} dRZ={delta_euler[2]:.2f} deg\n\n")
+        for name, pose in new_poses:
+            summary += f"  {name}: [{', '.join(f'{v:.2f}' for v in pose)}]\n"
+
+        self.btn_servo_execute.setEnabled(True)
+        self._set_servo_status(f"偏差已计算，就绪执行 ({len(new_poses)} 点位)", "#FF9800")
+        info(f"偏差计算完成: {len(new_poses)} 个新位姿", "CAMERA_UI")
+
+        QMessageBox.information(self, "偏差计算结果", summary)
+
+    def on_servo_execute_production(self):
+        """生产阶段 — 依次移动到新位姿并拍照"""
+        if not hasattr(self, '_servo_new_poses') or not self._servo_new_poses:
+            QMessageBox.warning(self, "错误", "请先检测偏差")
+            return
+
+        if not self.robot_service:
+            QMessageBox.warning(self, "错误", "未连接机械臂")
+            return
+
+        reply = QMessageBox.question(
+            self, "执行确认",
+            f"将依次移动到 {len(self._servo_new_poses)} 个拍照点位并拍照。\n是否继续？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        self._servo_running = True
+        self.btn_servo_execute.setEnabled(False)
+        self.btn_servo_detect.setEnabled(False)
+
+        # 使用 QTimer 逐步执行以保持 UI 响应
+        self._servo_exec_index = 0
+        self._servo_exec_poses = list(self._servo_new_poses)
+        self._servo_exec_timer = QTimer()
+        self._servo_exec_timer.setSingleShot(True)
+        self._servo_exec_timer.timeout.connect(self._servo_exec_next_point)
+        self._servo_exec_next_point()
+
+    def _servo_exec_next_point(self):
+        """执行下一个拍照点位（定时器回调）"""
+        idx = self._servo_exec_index
+        poses = self._servo_exec_poses
+
+        if idx >= len(poses):
+            # 全部完成 — 回到标准点位姿（位姿1）
+            self._servo_running = False
+            self.btn_servo_detect.setEnabled(True)
+            self.btn_servo_execute.setEnabled(False)
+            
+            # 获取标准点位姿并回去
+            std_pose = None
+            if self._servo_recipe and self._servo_recipe.std_robot_pose:
+                std_pose = self._servo_recipe.std_robot_pose
+            
+            if std_pose and self.robot_service:
+                self._set_servo_status("拍照完成，正在回到标准点...", "#FF9800")
+                info(f"生产拍照完成，机械臂回到标准点: {np.round(std_pose, 2)}", "CAMERA_UI")
+                try:
+                    self.robot_service.move_to(*std_pose)
+                    # 延迟后更新状态
+                    QTimer.singleShot(3000, lambda: self._set_servo_status(
+                        f"生产拍照完成 ({len(poses)} 个点位)，已回到标准点", "#4CAF50"
+                    ))
+                except Exception as move_err:
+                    warning(f"回到标准点失败: {move_err}", "CAMERA_UI")
+                    self._set_servo_status(f"生产拍照完成 ({len(poses)} 个点位)，回到标准点失败", "#f44336")
+            else:
+                self._set_servo_status(f"生产拍照完成 ({len(poses)} 个点位)", "#4CAF50")
+            
+            info(f"生产拍照全部完成: {len(poses)} 个点位", "CAMERA_UI")
+            QMessageBox.information(self, "完成", f"已完成 {len(poses)} 个点位拍照\n机械臂已回到标准点位姿。")
+            self._servo_new_poses = None
+            return
+
+        name, pose = poses[idx]
+        self._set_servo_status(f"移动中: {name} ({idx+1}/{len(poses)})", "#FF9800")
+        info(f"移动到 {name}: {np.round(pose, 2)}", "CAMERA_UI")
+
+        try:
+            self.robot_service.move_to(*pose)
+            # 保存目标位姿用于位置检测
+            self._servo_target_pose = pose
+            self._servo_current_name = name
+            self._servo_exec_index = idx + 1
+            self._servo_move_start_time = time.time()
+            
+            # 启动位置检测定时器（每300ms检查一次）
+            if not hasattr(self, '_servo_reach_timer'):
+                self._servo_reach_timer = QTimer()
+                self._servo_reach_timer.timeout.connect(self._servo_check_reached)
+            self._servo_reach_timer.start(300)
+        except Exception as e:
+            error(f"移动到 {name} 失败: {e}", "CAMERA_UI")
+            self._servo_running = False
+            self.btn_servo_detect.setEnabled(True)
+            QMessageBox.critical(self, "移动失败", f"移动到 {name} 失败: {e}")
+
+    def _servo_check_reached(self):
+        """轮询检查机械臂是否到达目标位置"""
+        import time
+        import math
+        
+        if not hasattr(self, '_servo_target_pose') or self._servo_target_pose is None:
+            self._servo_reach_timer.stop()
+            return
+        
+        target = self._servo_target_pose
+        name = getattr(self, '_servo_current_name', '')
+        start_time = getattr(self, '_servo_move_start_time', time.time())
+        
+        # 获取当前位置
+        curr_pos = self.robot_service.get_position() if self.robot_service else None
+        
+        if curr_pos:
+            # 计算位置误差 (仅xyz)
+            dx = curr_pos[0] - target[0]
+            dy = curr_pos[1] - target[1]
+            dz = curr_pos[2] - target[2]
+            dist = math.sqrt(dx*dx + dy*dy + dz*dz)
+            
+            # 到达判定: 距离 < 2mm
+            if dist < 2.0:
+                self._servo_reach_timer.stop()
+                self._set_servo_status(f"已到达 {name}，等待稳定后拍照...", "#2196F3")
+                info(f"已到达 {name}，距离误差={dist:.2f}mm，等待1秒后拍照", "CAMERA_UI")
+                # 等待 1 秒后拍照
+                QTimer.singleShot(1000, self._servo_take_photo_and_continue)
+                return
+        
+        # 超时检测 (15秒)
+        elapsed = time.time() - start_time
+        if elapsed > 15.0:
+            self._servo_reach_timer.stop()
+            warning(f"等待到达 {name} 超时 ({elapsed:.1f}s)，强制拍照", "CAMERA_UI")
+            self._set_servo_status(f"等待 {name} 超时，强制拍照...", "#f44336")
+            QTimer.singleShot(500, self._servo_take_photo_and_continue)
+    
+    def _servo_take_photo_and_continue(self):
+        """拍照并继续下一个点位"""
+        idx = self._servo_exec_index - 1  # 当前已完成移动的点位
+        if idx < len(self._servo_exec_poses):
+            name = self._servo_exec_poses[idx][0]
+            pose = self._servo_exec_poses[idx][1]
+            snap = self.save_snapshot(prefix=f"prod_{name}_")
+            info(f"========== 生产拍照 [{name}] ==========", "CAMERA_UI")
+            info(f"  实际位姿:", "CAMERA_UI")
+            info(f"    X={pose[0]:.3f} Y={pose[1]:.3f} Z={pose[2]:.3f} mm", "CAMERA_UI")
+            info(f"    RX={pose[3]:.3f} RY={pose[4]:.3f} RZ={pose[5]:.3f} deg", "CAMERA_UI")
+            info(f"  照片保存: {snap}", "CAMERA_UI")
+            info(f"=========================================", "CAMERA_UI")
+
+        # 继续下一个
+        self._servo_exec_timer.start(500)
+
     def update_frame_count_in_table(self, camera_info: CameraInfo):
         """更新帧数显示 (已废弃表格，仅打印日志或更新其他UI)"""
         pass
@@ -1717,14 +2528,34 @@ class CameraControlTab(QWidget):
 
     def save_snapshot(self, prefix="snapshot_"):
         """保存当前画面快照"""
-        if not self.current_camera or not self.current_camera.current_frame is not None:
-             warning("无法保存快照：无相机或无图像", "CAMERA_UI")
-             return
+        # 检查相机是否可用
+        if not self.current_camera:
+            warning("无法保存快照：无相机", "CAMERA_UI")
+            return None
+        
+        # 获取当前帧 - 优先从相机驱动获取最新帧
+        frame = None
+        if hasattr(self.current_camera, 'camera_driver') and self.current_camera.camera_driver:
+            try:
+                frame = self.current_camera.camera_driver.capture_image()
+                if frame is not None:
+                    debug(f"从相机驱动获取帧: shape={frame.shape}", "CAMERA_UI")
+            except Exception as e:
+                warning(f"从相机驱动获取帧失败: {e}", "CAMERA_UI")
+        
+        # 回退到current_frame
+        if frame is None:
+            frame = self.current_camera.current_frame
+            if frame is not None:
+                debug(f"使用current_frame: shape={frame.shape}", "CAMERA_UI")
+        
+        if frame is None:
+            warning("无法保存快照：无图像帧", "CAMERA_UI")
+            return None
              
         try:
             import cv2
             import time
-            frame = self.current_camera.current_frame
             
             # 使用配置中的媒体保存路径
             from core.managers.app_config import AppConfigManager
@@ -1733,8 +2564,11 @@ class CameraControlTab(QWidget):
             
             os.makedirs(save_dir, exist_ok=True)
             
+            # 文件名中去除空格，避免文件系统问题
+            safe_prefix = prefix.replace(" ", "_").replace("　", "_")
+            
             timestamp = time.strftime("%Y%m%d_%H%M%S")
-            filename = f"{prefix}{timestamp}.jpg"
+            filename = f"{safe_prefix}{timestamp}.jpg"
             filepath = os.path.join(save_dir, filename)
             
             # 颜色转换 RGB -> BGR (OpenCV使用BGR)

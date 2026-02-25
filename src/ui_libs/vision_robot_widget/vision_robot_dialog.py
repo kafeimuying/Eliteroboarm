@@ -1468,7 +1468,7 @@ class VisionRobotDialog(QMainWindow):
 
             # 创建相机管理对话框
             dialog = QDialog(self)
-            dialog.setWindowTitle("相机管理")
+            dialog.setWindowTitle("柔性拍摄")
             dialog.setMinimumSize(800, 600)
 
             # 使用相机管理的Tab组件 - 需要提供CameraService参数

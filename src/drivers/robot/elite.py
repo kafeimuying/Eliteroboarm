@@ -18,39 +18,43 @@ except ImportError:
 
 # Try to import the compiled C++ extension
 CPP_EXT_AVAILABLE = False
-try:
-    import elite_ext
-    CPP_EXT_AVAILABLE = True
-    info("Success loading Elite C++ Extension", "ROBOT_DRIVER")
-except ImportError:
-    # 尝试自动添加路径 (Development Environment Fallback)
+# Check for environment variable disable switch
+if os.environ.get('DISABLE_ELITE_CPP', '0') == '1':
+    info("Elite C++ Extension disabled by environment variable", "ROBOT_DRIVER")
+else:
     try:
-        import sys
-        from pathlib import Path
-        
-        # 假设当前文件在 src/drivers/robot/elite.py
-        # 目标在 project_root/cpp_extensions/extensions/Release
-        current_file = Path(__file__).resolve()
-        project_root = current_file.parent.parent.parent.parent
-        ext_path = project_root / "cpp_extensions" / "extensions" / "Release"
-        
-        if ext_path.exists() and str(ext_path) not in sys.path:
-            sys.path.append(str(ext_path))
-            if hasattr(os, 'add_dll_directory'):
-                try:
-                    os.add_dll_directory(str(ext_path))
-                except:
-                    pass
+        import elite_ext
+        CPP_EXT_AVAILABLE = True
+        info("Success loading Elite C++ Extension", "ROBOT_DRIVER")
+    except ImportError:
+        # 尝试自动添加路径 (Development Environment Fallback)
+        try:
+            import sys
+            from pathlib import Path
             
-            import elite_ext
-            CPP_EXT_AVAILABLE = True
-            info(f"Success loading Elite C++ Extension from {ext_path}", "ROBOT_DRIVER")
+            # 假设当前文件在 src/drivers/robot/elite.py
+            # 目标在 project_root/cpp_extensions/extensions/Release
+            current_file = Path(__file__).resolve()
+            project_root = current_file.parent.parent.parent.parent
+            ext_path = project_root / "cpp_extensions" / "extensions" / "Release"
             
-    except ImportError as e:
+            if ext_path.exists() and str(ext_path) not in sys.path:
+                sys.path.append(str(ext_path))
+                if hasattr(os, 'add_dll_directory'):
+                    try:
+                        os.add_dll_directory(str(ext_path))
+                    except:
+                        pass
+                
+                import elite_ext
+                CPP_EXT_AVAILABLE = True
+                info(f"Success loading Elite C++ Extension from {ext_path}", "ROBOT_DRIVER")
+                
+        except ImportError as e:
+            CPP_EXT_AVAILABLE = False
+            info(f"Elite C++ Extension not found ({e}), falling back to Python Implementation", "ROBOT_DRIVER")
+    except Exception:
         CPP_EXT_AVAILABLE = False
-        info(f"Elite C++ Extension not found ({e}), falling back to Python Implementation", "ROBOT_DRIVER")
-except Exception:
-    CPP_EXT_AVAILABLE = False
 
 class EliteRobot(IRobot):
     """Elite机器人驱动实现"""
@@ -164,7 +168,7 @@ class EliteRobot(IRobot):
     def connect(self, config: Dict[str, Any]) -> bool:
         """连接Elite机器人"""
         self.config = config
-        ip = config.get('connection_params', {}).get('ip', '127.0.0.1')
+        ip = config.get('connection_params', {}).get('ip', '192.168.1.200')
         self.robot_ip = ip
         self.global_speed_ratio = 0.5 # 默认50%速度
         info(f"Connecting to Elite robot at {ip}", "ROBOT_DRIVER")
@@ -484,7 +488,7 @@ class EliteRobot(IRobot):
         info("[Calibration] Starting C++ 3D Calibration...", "ROBOT_DRIVER")
         self._broadcast_log(f"启动C++ 3D标定流程 (层数:{layers}, 方向:{direction})...")
 
-        ip = self.config.get('connection_params', {}).get('ip', '127.0.0.1')
+        ip = self.config.get('connection_params', {}).get('ip', '192.168.1.200')
         recipe_path = os.getcwd()
 
         # 1. Connect Calibration Controller
@@ -531,7 +535,7 @@ class EliteRobot(IRobot):
         info("[Calibration] Starting C++ 9-point calibration (Optimization Enabled)...", "ROBOT_DRIVER")
         self._broadcast_log("启动C++高性能标定流程 (RTSI Bypass模式)...")
 
-        ip = self.config.get('connection_params', {}).get('ip', '127.0.0.1')
+        ip = self.config.get('connection_params', {}).get('ip', '192.168.1.200')
         recipe_path = os.getcwd()
 
         # 1. Connect Calibration Controller (Dashboard/Primary only)
@@ -1034,13 +1038,83 @@ class EliteRobot(IRobot):
         return True
 
     # ========== 实时控制相关方法 ==========
-    def start_jogging(self, axis: str) -> bool:
-        """开始点动运动"""
-        return True
+    def start_jogging(self, axis_cmd: str) -> bool:
+        """
+        开始连续点动 (使用速度控制模式)
+        Args:
+            axis_cmd: "X+", "X-", "Y+", "Y-", "Z+", "Z-", "RX+", "RX-", "RY+", "RY-", "RZ+", "RZ-"
+        """
+        if not axis_cmd or len(axis_cmd) < 2:
+            return False
+
+        # 解析轴和方向
+        direction = 1 if '+' in axis_cmd else -1
+        axis_part = axis_cmd.replace('+', '').replace('-', '').upper()
+        
+        # 判断是线性轴还是旋转轴
+        is_rotation = axis_part.startswith('R')
+        
+        # Calculate velocity vector
+        max_linear_speed = 250.0  # mm/s (Safe default for linear jogging)
+        max_angular_speed = 30.0  # deg/s (Safe default for rotation jogging)
+        
+        vx, vy, vz = 0.0, 0.0, 0.0      # 线性速度 m/s
+        vrx, vry, vrz = 0.0, 0.0, 0.0   # 角速度 rad/s
+        
+        if is_rotation:
+            # 旋转轴
+            speed_deg = max_angular_speed * self.global_speed_ratio * direction
+            speed_rad = speed_deg * 0.017453  # deg -> rad
+            
+            if axis_part == 'RX': vrx = speed_rad
+            elif axis_part == 'RY': vry = speed_rad
+            elif axis_part == 'RZ': vrz = speed_rad
+            
+            info(f"Start jogging (rotation): {axis_cmd} (speed={speed_deg:.1f}deg/s)", "ROBOT_DRIVER")
+        else:
+            # 线性轴
+            speed_mm = max_linear_speed * self.global_speed_ratio * direction
+            speed_m = speed_mm / 1000.0
+            
+            if axis_part == 'X': vx = speed_m
+            elif axis_part == 'Y': vy = speed_m
+            elif axis_part == 'Z': vz = speed_m
+            
+            info(f"Start jogging (linear): {axis_cmd} (speed={abs(speed_mm):.1f}mm/s)", "ROBOT_DRIVER")
+        
+        # Acceleration
+        acc = 0.5 # m/s^2
+        
+        # Time t=30s (move for 30 seconds or until stop is called)
+        # speedl(pose_vel, a, t) - pose_vel = [vx, vy, vz, vrx, vry, vrz]
+        script = f"speedl([{vx:.6f}, {vy:.6f}, {vz:.6f}, {vrx:.6f}, {vry:.6f}, {vrz:.6f}], {acc:.2f}, 30.0)"
+        
+        # Send script
+        if self.sdk and self.driver_handle: # Prefer SDK
+             try:
+                return self.sdk.send_script(self.driver_handle, script)
+             except Exception as e:
+                error(f"SDK start_jogging failed: {e}", "ROBOT_DRIVER")
+        
+        return self.send_script(script)
 
     def stop_jogging(self) -> bool:
         """停止点动运动"""
-        return True
+        # Stop command
+        # stopl(a) - deceleration
+        acc = 1.0 # m/s^2
+        script = f"stopl({acc:.2f})"
+        
+        info("Stop jogging", "ROBOT_DRIVER")
+        
+        if self.sdk and self.driver_handle:
+             try:
+                return self.sdk.send_script(self.driver_handle, script)
+             except Exception as e:
+                error(f"SDK stop_jogging failed: {e}", "ROBOT_DRIVER")
+
+        return self.send_script(script)
+
 
     def jog_move(self, axis: str, speed: float, distance: float) -> bool:
         """点动移动指定轴"""
