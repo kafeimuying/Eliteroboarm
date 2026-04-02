@@ -2,6 +2,20 @@ application:
   app_name: Robot Control System
   org_name: Robot Control
   qt_high_dpi_scaling: false
+
+# 视觉检测配置
+vision:
+  # Tag/Marker尺寸 (米)
+  # 这是指Tag外边框的尺寸（黑色边框外边缘到外边缘的距离）
+  tag_size_m: 0.1
+  apriltag_size_m: 0.1
+  aruco_size_m: 0.1
+
+  # 深度补偿因子 (可选)
+  # 用于补偿系统性的深度估计偏差
+  # 1.0 = 不补偿
+  depth_scale_factor: 1.0
+
 paths:
   captures_subdir: captures
   canvas_temp_subdir: temp/canvas_temp

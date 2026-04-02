@@ -41,6 +41,7 @@ class PhotoPoint:
     pose: List[float]              # [x, y, z, rx, ry, rz] mm/deg
     rel_transform: Optional[List[List[float]]] = None  # 4x4 T_tag_flange (相对标准tag的变换)
     snapshot_path: Optional[str] = None
+    tag_data: Optional[Dict] = None  # 示教时的AprilTag检测数据 (tvec, rvec, id等)
 
 @dataclass 
 class ServoRecipe:
@@ -80,6 +81,7 @@ class ServoRecipe:
                 'pose': pp.pose,
                 'rel_transform': pp.rel_transform,
                 'snapshot_path': pp.snapshot_path,
+                'tag_data': _sanitize_tag_data(pp.tag_data),
             })
         return d
 
@@ -102,18 +104,35 @@ class ServoRecipe:
                 pose=pp_data.get('pose', []),
                 rel_transform=pp_data.get('rel_transform'),
                 snapshot_path=pp_data.get('snapshot_path'),
+                tag_data=pp_data.get('tag_data'),
             ))
         return recipe
 
 
 def _sanitize_tag_data(tag_data: Optional[Dict]) -> Optional[Dict]:
-    """将 tag_data 中的 numpy 数组转为 list 以便 JSON 序列化"""
+    """将 tag_data 中的 numpy 数组和标量转为 Python 原生类型以便 JSON 序列化"""
     if tag_data is None:
         return None
     result = {}
     for k, v in tag_data.items():
-        if hasattr(v, 'tolist'):
+        if v is None:
+            result[k] = None
+        elif hasattr(v, 'tolist'):
+            # numpy数组或标量 -> list或Python原生类型
             result[k] = v.tolist()
+        elif isinstance(v, (np.floating, np.integer)):
+            # numpy标量类型 (float32, int64等)
+            result[k] = v.item()
+        elif isinstance(v, dict):
+            # 递归处理嵌套字典
+            result[k] = _sanitize_tag_data(v)
+        elif isinstance(v, (list, tuple)):
+            # 处理列表/元组中的numpy类型
+            result[k] = [
+                x.item() if isinstance(x, (np.floating, np.integer)) else 
+                (x.tolist() if hasattr(x, 'tolist') else x) 
+                for x in v
+            ]
         else:
             result[k] = v
     return result
@@ -293,7 +312,7 @@ class MultiPointServo:
         return True
     
     def add_photo_point(self, name: str, robot_pose: List[float],
-                        snapshot_path: str = None) -> int:
+                        snapshot_path: str = None, tag_data: Dict = None) -> int:
         """
         添加普通拍照点位
         
@@ -301,6 +320,7 @@ class MultiPointServo:
             name: 点位名称
             robot_pose: 机械臂位姿 [x,y,z,rx,ry,rz]
             snapshot_path: 快照路径 (可选)
+            tag_data: AprilTag检测数据 (可选，用于纠偏后误差计算)
         Returns:
             当前点位总数
         """
@@ -311,6 +331,7 @@ class MultiPointServo:
             name=name,
             pose=list(robot_pose),
             snapshot_path=snapshot_path,
+            tag_data=tag_data,
         )
         self.current_recipe.photo_points.append(pp)
         return len(self.current_recipe.photo_points)

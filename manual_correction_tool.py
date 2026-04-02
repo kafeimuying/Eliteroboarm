@@ -71,10 +71,14 @@ def matrix_to_elite_pose(matrix, is_degree=True):
 
 def calculate_correction(current_pose, deviation, hand_eye_matrix, is_degree=True):
     """
-    核心算法：计算纠偏后的目标位姿
+    核心算法：计算纠偏后的目标位姿 (6DOF支持)
     
     使用完整齐次矩阵链处理旋转-平移耦合：
       T_B_F_new = T_B_F_cur @ T_F_C @ T_dev @ T_F_C_inv
+    
+    支持两种输入格式：
+      - 3元素: [dx, dy, drz] - 仅XY平面纠偏 (向后兼容)
+      - 6元素: [dx, dy, dz, drx, dry, drz] - 完整6DOF纠偏
     
     重要数学背景：
     ─────────────────────────────────────────────
@@ -90,22 +94,36 @@ def calculate_correction(current_pose, deviation, hand_eye_matrix, is_degree=Tru
     机器人控制器内部会正确还原旋转矩阵，运动是平滑的。
     ─────────────────────────────────────────────
     """
-    dx, dy, dtheta_deg = deviation
+    # 解析偏差参数 - 支持3元素或6元素输入
+    if len(deviation) == 3:
+        # 向后兼容模式: [dx, dy, drz]
+        dx, dy, drz_deg = deviation
+        dz = 0.0
+        drx_deg = 0.0
+        dry_deg = 0.0
+    elif len(deviation) == 6:
+        # 完整6DOF模式: [dx, dy, dz, drx, dry, drz]
+        dx, dy, dz, drx_deg, dry_deg, drz_deg = deviation
+    else:
+        raise ValueError(f"deviation参数需要3或6个元素，实际收到{len(deviation)}个")
     
     # 1. 构造偏差矩阵 T_dev (相机坐标系下的移动)
-    dtheta_rad = math.radians(dtheta_deg)
-    cos_t = math.cos(dtheta_rad)
-    sin_t = math.sin(dtheta_rad)
+    # 使用scipy构造完整的6DOF变换
+    drx_rad = math.radians(drx_deg)
+    dry_rad = math.radians(dry_deg)
+    drz_rad = math.radians(drz_deg)
+    
+    # 构造旋转矩阵 (XYZ欧拉角)
+    r_dev = R.from_euler('xyz', [drx_rad, dry_rad, drz_rad], degrees=False)
+    R_dev = r_dev.as_matrix()
     
     T_dev = np.eye(4)
-    # 绕相机Z轴旋转
-    T_dev[0, 0] = cos_t
-    T_dev[0, 1] = -sin_t
-    T_dev[1, 0] = sin_t
-    T_dev[1, 1] = cos_t
-    # 平移 (相机XY平面)
+    # 设置旋转部分
+    T_dev[:3, :3] = R_dev
+    # 设置平移部分 (完整XYZ方向)
     T_dev[0, 3] = dx
     T_dev[1, 3] = dy
+    T_dev[2, 3] = dz
     
     # 2. 完整矩阵链 (正确处理旋转与平移的耦合效应)
     # 物理含义：相机需要在自身坐标系移动 T_dev，

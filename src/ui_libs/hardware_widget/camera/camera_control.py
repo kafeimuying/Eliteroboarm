@@ -24,6 +24,107 @@ from .save_path_dialog import SavePathDialog
 import sys
 import os
 
+
+# ==================== ArUco 检测器类 ====================
+class ArUcoDetector:
+    """ArUco标记检测器 - 用于检测OpenCV ArUco标记（6x6等）"""
+    def __init__(self, camera_matrix, dist_coeffs, marker_size=0.1, dictionary_name="DICT_6X6_250"):
+        """
+        Args:
+            camera_matrix: 相机内参矩阵 3x3
+            dist_coeffs: 畸变系数
+            marker_size: 标记尺寸 (米)
+            dictionary_name: ArUco字典名称 (如 "DICT_6X6_250")
+        """
+        self.camera_matrix = camera_matrix
+        self.dist_coeffs = dist_coeffs
+        self.marker_size = marker_size
+        
+        # 获取ArUco字典
+        aruco_dict_map = {
+            "DICT_4X4_50": cv2.aruco.DICT_4X4_50,
+            "DICT_4X4_100": cv2.aruco.DICT_4X4_100,
+            "DICT_4X4_250": cv2.aruco.DICT_4X4_250,
+            "DICT_4X4_1000": cv2.aruco.DICT_4X4_1000,
+            "DICT_5X5_50": cv2.aruco.DICT_5X5_50,
+            "DICT_5X5_100": cv2.aruco.DICT_5X5_100,
+            "DICT_5X5_250": cv2.aruco.DICT_5X5_250,
+            "DICT_5X5_1000": cv2.aruco.DICT_5X5_1000,
+            "DICT_6X6_50": cv2.aruco.DICT_6X6_50,
+            "DICT_6X6_100": cv2.aruco.DICT_6X6_100,
+            "DICT_6X6_250": cv2.aruco.DICT_6X6_250,
+            "DICT_6X6_1000": cv2.aruco.DICT_6X6_1000,
+            "DICT_7X7_50": cv2.aruco.DICT_7X7_50,
+            "DICT_7X7_100": cv2.aruco.DICT_7X7_100,
+            "DICT_7X7_250": cv2.aruco.DICT_7X7_250,
+            "DICT_7X7_1000": cv2.aruco.DICT_7X7_1000,
+        }
+        
+        dict_id = aruco_dict_map.get(dictionary_name, cv2.aruco.DICT_6X6_250)
+        self.aruco_dict = cv2.aruco.getPredefinedDictionary(dict_id)
+        self.aruco_params = cv2.aruco.DetectorParameters()
+        self.detector = cv2.aruco.ArucoDetector(self.aruco_dict, self.aruco_params)
+        self.dict_name = dictionary_name
+    
+    def detect(self, img):
+        """检测ArUco标记并返回与AprilTag检测器相同格式的结果"""
+        if len(img.shape) == 3:
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = img
+        
+        corners, ids, rejected = self.detector.detectMarkers(gray)
+        
+        results = []
+        if ids is not None:
+            for i, marker_id in enumerate(ids.flatten()):
+                # 估计位姿
+                rvec, tvec, _ = cv2.aruco.estimatePoseSingleMarkers(
+                    [corners[i]], self.marker_size, self.camera_matrix, self.dist_coeffs
+                )
+                
+                # 转换为欧拉角
+                R, _ = cv2.Rodrigues(rvec[0][0])
+                euler = self._rotation_matrix_to_euler(R)
+                
+                # 计算距离
+                distance = np.linalg.norm(tvec[0][0])
+                
+                # 计算中心点 (从corners计算)
+                marker_corners = corners[i].reshape(4, 2)
+                center = marker_corners.mean(axis=0)
+                
+                results.append({
+                    'id': int(marker_id),
+                    'tvec': tvec[0][0],
+                    'rvec': rvec[0][0],
+                    'euler': euler,
+                    'corners': corners[i],
+                    'center': center,  # 像素中心坐标
+                    'distance': distance,
+                    'marker_type': 'aruco',
+                    'dict_name': self.dict_name
+                })
+        
+        return results
+    
+    def _rotation_matrix_to_euler(self, R):
+        """旋转矩阵转欧拉角 (XYZ顺序, 单位: 度)"""
+        sy = np.sqrt(R[0, 0]**2 + R[1, 0]**2)
+        singular = sy < 1e-6
+        
+        if not singular:
+            x = np.arctan2(R[2, 1], R[2, 2])
+            y = np.arctan2(-R[2, 0], sy)
+            z = np.arctan2(R[1, 0], R[0, 0])
+        else:
+            x = np.arctan2(-R[1, 2], R[1, 1])
+            y = np.arctan2(-R[2, 0], sy)
+            z = 0
+        
+        return np.degrees([x, y, z])
+
+
 # 延迟导入视觉算法模块以避免初始化时的循环依赖
 VISION_ALGO_AVAILABLE = False
 _vision_import_error = None
@@ -33,9 +134,20 @@ if os.environ.get('DISABLE_VISION_SERVO', '').lower() in ('1', 'true', 'yes'):
     _vision_import_error = "用户通过环境变量禁用"
 else:
     try:
-        sys.path.append(os.getcwd())
+        # 添加项目根目录到路径
+        _project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
+        if _project_root not in sys.path:
+            sys.path.insert(0, _project_root)
+        
         from manual_correction_tool import calculate_correction, load_json_matrix
-        from src.algorithms.vision.apriltag_detector import AprilTagDetector
+        # 直接导入 apriltag_detector，避免经过 src.algorithms 包
+        import importlib.util
+        _detector_path = os.path.join(_project_root, "src", "algorithms", "vision", "apriltag_detector.py")
+        _spec = importlib.util.spec_from_file_location("apriltag_detector", _detector_path)
+        _detector_module = importlib.util.module_from_spec(_spec)
+        _spec.loader.exec_module(_detector_module)
+        AprilTagDetector = _detector_module.AprilTagDetector
+        
         from multi_point_servo import MultiPointServo, ServoRecipe, save_recipe, load_recipe, list_recipes, RECIPE_DIR
         VISION_ALGO_AVAILABLE = True
     except ImportError as e:
@@ -91,7 +203,7 @@ class FloatingJogDialog(QDialog):
         self.setWindowFlags(
             Qt.WindowType.Tool | Qt.WindowType.WindowStaysOnTopHint
         )
-        self.setFixedSize(280, 340)
+        self.setFixedSize(400, 560)
         self._jog_timer = QTimer(self)
         self._jog_timer.setInterval(200)  # 每200ms发送一次移动指令
         self._jog_timer.timeout.connect(self._do_jog_step)
@@ -102,40 +214,44 @@ class FloatingJogDialog(QDialog):
     # ---------- UI ----------
     def _build_ui(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
 
         title = QLabel("轴向控制 (长按移动)")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title.setStyleSheet("font-weight:bold;")
+        title.setStyleSheet("font-weight:bold; font-size:14px;")
         layout.addWidget(title)
 
         grid = QGridLayout()
-        grid.setSpacing(8)
+        grid.setSpacing(10)
+        grid.setContentsMargins(5, 5, 5, 5)
 
-        # 线性轴控制 (X/Y/Z)
+        # 线性轴控制 (X/Y/Z) - 3列3行布局
         linear_label = QLabel("线性轴 (X/Y/Z)")
         linear_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        linear_label.setStyleSheet("font-size:11px; color:#666; font-weight:bold;")
+        linear_label.setStyleSheet("font-size:12px; color:#666; font-weight:bold;")
         grid.addWidget(linear_label, 0, 0, 1, 3)
         
-        # 线性轴按钮布局：3列3行，十字形排列
-        #       Y+
-        #  X-   --   X+
-        #       Y-
-        #  Z-        Z+
-        directions = [
-            ("Y+", 1, 1),  # 上
-            ("X-", 2, 0), ("X+", 2, 2),  # 左右
-            ("Y-", 3, 1),  # 下
-            ("Z-", 4, 0), ("Z+", 4, 2),  # Z轴
+        # 线性轴按钮布局：3列3行，每行一个轴的+/-
+        linear_directions = [
+            ("X-", 1, 0), ("X+", 1, 2),
+            ("Y-", 2, 0), ("Y+", 2, 2),
+            ("Z-", 3, 0), ("Z+", 3, 2),
         ]
+        
+        linear_axis_labels = [("X:", 1, 1), ("Y:", 2, 1), ("Z:", 3, 1)]
+        for label_text, row, col in linear_axis_labels:
+            lbl = QLabel(label_text)
+            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            lbl.setStyleSheet("font-size:12px; color:#666; font-weight:bold;")
+            grid.addWidget(lbl, row, col)
 
-        for text, row, col in directions:
+        for text, row, col in linear_directions:
             btn = QPushButton(text)
-            btn.setMinimumSize(70, 45)
+            btn.setFixedSize(85, 45)
             btn.setStyleSheet(
                 "QPushButton{background-color:#2196F3;color:white;border:none;"
-                "border-radius:5px;font-weight:bold;font-size:14px;}"
+                "border-radius:6px;font-weight:bold;font-size:14px;}"
                 "QPushButton:hover{background-color:#1976D2;}"
                 "QPushButton:pressed{background-color:#0D47A1;}"
             )
@@ -143,46 +259,40 @@ class FloatingJogDialog(QDialog):
             btn.pressed.connect(lambda t=text: self._on_btn_pressed(t))
             btn.released.connect(self._on_btn_released)
             grid.addWidget(btn, row, col)
-        
-        # Z轴标签
-        z_label = QLabel("Z:")
-        z_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        z_label.setStyleSheet("font-size:12px; color:#666;")
-        grid.addWidget(z_label, 4, 1)
 
         # 分隔线
         separator = QFrame()
         separator.setFrameShape(QFrame.Shape.HLine)
-        separator.setStyleSheet("background-color: #ddd;")
+        separator.setStyleSheet("background-color: #ccc;")
         separator.setFixedHeight(2)
-        grid.addWidget(separator, 5, 0, 1, 3)
+        grid.addWidget(separator, 4, 0, 1, 3)
         
-        # 旋转轴控制 (RX/RY/RZ)
+        # 旋转轴控制 (RX/RY/RZ) - 3列3行布局
         rotation_label = QLabel("旋转轴 (RX/RY/RZ)")
         rotation_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        rotation_label.setStyleSheet("font-size:11px; color:#666; font-weight:bold;")
-        grid.addWidget(rotation_label, 6, 0, 1, 3)
+        rotation_label.setStyleSheet("font-size:12px; color:#666; font-weight:bold;")
+        grid.addWidget(rotation_label, 5, 0, 1, 3)
         
-        # 旋转轴按钮布局：3列2行，每行一个轴的+/-
+        # 旋转轴按钮布局：3列3行，每行一个轴的+/-
         rotation_directions = [
-            ("RX-", 7, 0), ("RX+", 7, 2),
-            ("RY-", 8, 0), ("RY+", 8, 2),
-            ("RZ-", 9, 0), ("RZ+", 9, 2),
+            ("RX-", 6, 0), ("RX+", 6, 2),
+            ("RY-", 7, 0), ("RY+", 7, 2),
+            ("RZ-", 8, 0), ("RZ+", 8, 2),
         ]
         
-        axis_labels = [("RX:", 7, 1), ("RY:", 8, 1), ("RZ:", 9, 1)]
-        for label_text, row, col in axis_labels:
+        rotation_axis_labels = [("RX:", 6, 1), ("RY:", 7, 1), ("RZ:", 8, 1)]
+        for label_text, row, col in rotation_axis_labels:
             lbl = QLabel(label_text)
             lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            lbl.setStyleSheet("font-size:10px; color:#666;")
+            lbl.setStyleSheet("font-size:11px; color:#666; font-weight:bold;")
             grid.addWidget(lbl, row, col)
 
         for text, row, col in rotation_directions:
             btn = QPushButton(text)
-            btn.setMinimumSize(70, 40)
+            btn.setFixedSize(85, 45)
             btn.setStyleSheet(
                 "QPushButton{background-color:#9C27B0;color:white;border:none;"
-                "border-radius:5px;font-weight:bold;font-size:13px;}"
+                "border-radius:6px;font-weight:bold;font-size:14px;}"
                 "QPushButton:hover{background-color:#7B1FA2;}"
                 "QPushButton:pressed{background-color:#6A1B9A;}"
             )
@@ -196,12 +306,12 @@ class FloatingJogDialog(QDialog):
         # 速度显示
         self._speed_label = QLabel("速度: --")
         self._speed_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._speed_label.setStyleSheet("color:#666; font-size:11px; margin-top:4px;")
+        self._speed_label.setStyleSheet("color:#666; font-size:12px; margin-top:6px;")
         layout.addWidget(self._speed_label)
 
         hint = QLabel("速度取自机械臂控制面板设定")
         hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        hint.setStyleSheet("color:#999; font-size:10px;")
+        hint.setStyleSheet("color:#999; font-size:11px;")
         layout.addWidget(hint)
 
     # ---------- 长按逻辑 ----------
@@ -636,8 +746,9 @@ class CameraControlTab(QWidget):
         layout.addWidget(record_group)
 
         # ===================== 多点位视觉伺服 =====================
-        # 环境变量控制：ENABLE_VISION_SERVO=1 才启用（默认禁用以诊断问题）
-        enable_servo_ui = os.environ.get('ENABLE_VISION_SERVO', '0').lower() in ('1', 'true', 'yes')
+        # 环境变量控制：DISABLE_VISION_SERVO=1 才禁用（默认启用）
+        disable_servo_ui = os.environ.get('DISABLE_VISION_SERVO', '0').lower() in ('1', 'true', 'yes')
+        enable_servo_ui = not disable_servo_ui
         
         if VISION_ALGO_AVAILABLE and enable_servo_ui:
             try:
@@ -1822,6 +1933,28 @@ class CameraControlTab(QWidget):
         except Exception as e:
             error(f"处理相机帧失败: {e}", "CAMERA_UI")
 
+    def _get_vision_config(self):
+        """从配置文件读取视觉检测参数"""
+        config = {
+            'apriltag_size_m': 0.1,
+            'aruco_size_m': 0.1,
+            'depth_scale_factor': 1.0,
+        }
+        try:
+            import yaml
+            config_file = os.path.join(os.getcwd(), "config", "system.yaml")
+            if os.path.exists(config_file):
+                with open(config_file, 'r', encoding='utf-8') as f:
+                    data = yaml.safe_load(f)
+                    vision = data.get('vision', {})
+                    config['apriltag_size_m'] = vision.get('apriltag_size_m', vision.get('tag_size_m', 0.1))
+                    config['aruco_size_m'] = vision.get('aruco_size_m', vision.get('tag_size_m', 0.1))
+                    config['depth_scale_factor'] = vision.get('depth_scale_factor', 1.0)
+                    info(f"Vision配置: AprilTag={config['apriltag_size_m']*1000:.1f}mm, ArUco={config['aruco_size_m']*1000:.1f}mm", "CAMERA_UI")
+        except Exception as e:
+            warning(f"加载vision配置失败: {e}，使用默认值", "CAMERA_UI")
+        return config
+
     def _get_detector(self):
         """延迟加载或获取检测器"""
         if hasattr(self, 'at_detector') and self.at_detector:
@@ -1845,13 +1978,227 @@ class CameraControlTab(QWidget):
             # 默认内参 (640x480)
             mtx = np.array([[600, 0, 320], [0, 600, 240], [0, 0, 1]], dtype=np.float32)
             dist = np.zeros(4)
+        
+        # 从配置读取tag_size
+        vision_config = self._get_vision_config()
+        tag_size = vision_config['apriltag_size_m']
             
         try:
-            self.at_detector = AprilTagDetector(tag_size_m=0.1, camera_matrix=mtx, dist_coeffs=dist)
+            self.at_detector = AprilTagDetector(tag_size_m=tag_size, camera_matrix=mtx, dist_coeffs=dist)
             return self.at_detector
         except Exception as e:
             error(f"初始化AprilTagDetector失败: {e}", "CAMERA_UI")
             return None
+
+    def _get_aruco_detector(self, dict_name: str = "DICT_6X6_50"):
+        """延迟加载或获取ArUco检测器"""
+        detector_key = f'aruco_detector_{dict_name}'
+        if hasattr(self, detector_key) and getattr(self, detector_key):
+            return getattr(self, detector_key)
+        
+        # 尝试加载相机内参
+        mtx, dist = self._load_camera_calibration()
+        
+        # 从配置读取marker_size
+        vision_config = self._get_vision_config()
+        marker_size = vision_config['aruco_size_m']
+        
+        try:
+            detector = ArUcoDetector(
+                camera_matrix=mtx, 
+                dist_coeffs=dist, 
+                marker_size=marker_size, 
+                dictionary_name=dict_name
+            )
+            setattr(self, detector_key, detector)
+            info(f"已创建ArUco检测器: {dict_name}, marker_size={marker_size*1000:.1f}mm", "CAMERA_UI")
+            return detector
+        except Exception as e:
+            error(f"初始化ArUcoDetector失败: {e}", "CAMERA_UI")
+            return None
+    
+    def _load_camera_calibration(self):
+        """加载相机标定参数"""
+        calib_file = os.path.join(os.getcwd(), "AprilTagInterface", "calibration", "realsense_calib.npz")
+        mtx = None
+        dist = None
+        
+        if os.path.exists(calib_file):
+            try:
+                data = np.load(calib_file)
+                mtx = data['mtx']
+                dist = data.get('dist', np.zeros(4))
+            except Exception as e:
+                warning(f"加载标定文件失败: {e}", "CAMERA_UI")
+        
+        if mtx is None:
+            # 默认内参 (640x480)
+            mtx = np.array([[600, 0, 320], [0, 600, 240], [0, 0, 1]], dtype=np.float32)
+            dist = np.zeros(4)
+        
+        return mtx, dist
+    
+    def _detect_marker(self, frame, marker_type: str = "apriltag", aruco_dict: str = "DICT_6X6_50"):
+        """
+        通用标记检测方法 - 支持 AprilTag 和 ArUco
+        
+        Args:
+            frame: 图像帧
+            marker_type: 标记类型 ("apriltag" 或 "aruco")
+            aruco_dict: ArUco字典名称 (仅当marker_type为aruco时有效)
+        Returns:
+            检测结果列表，格式与 AprilTagDetector.detect() 相同
+        """
+        if marker_type == "apriltag":
+            detector = self._get_detector()
+            if detector:
+                return detector.detect(frame)
+        elif marker_type == "aruco":
+            detector = self._get_aruco_detector(aruco_dict)
+            if detector:
+                return detector.detect(frame)
+        else:
+            # 自动检测：先尝试AprilTag，再尝试ArUco (6x6系列)
+            detector = self._get_detector()
+            if detector:
+                results = detector.detect(frame)
+                if results:
+                    return results
+            
+            # AprilTag未检测到，尝试ArUco 6x6系列
+            for dict_name in ["DICT_6X6_50", "DICT_6X6_100", "DICT_6X6_250", "DICT_6X6_1000"]:
+                aruco_det = self._get_aruco_detector(dict_name)
+                if aruco_det:
+                    results = aruco_det.detect(frame)
+                    if results:
+                        info(f"使用ArUco {dict_name} 检测到标记", "CAMERA_UI")
+                        return results
+        
+        return []
+
+    def _detect_marker_averaged(self, num_frames: int = 5, interval_ms: int = 100, 
+                                  marker_type: str = "auto", aruco_dict: str = "DICT_6X6_50"):
+        """
+        多帧检测平均 - 用于降低位姿估计噪声
+        
+        Args:
+            num_frames: 采集帧数 (默认5)
+            interval_ms: 帧间隔毫秒数 (默认100ms)
+            marker_type: 标记类型
+            aruco_dict: ArUco字典名
+            
+        Returns:
+            平均后的检测结果列表，与 _detect_marker 格式相同
+        """
+        import time
+        
+        if not self.current_camera:
+            return []
+        
+        all_detections = []  # 每帧检测到的所有标记: [{id: [det1, det2, ...]}, ...]
+        
+        for i in range(num_frames):
+            frame = None
+            
+            # 尝试获取新帧
+            if hasattr(self.current_camera, 'camera_driver') and self.current_camera.camera_driver:
+                try:
+                    frame = self.current_camera.camera_driver.capture_image()
+                except Exception:
+                    pass
+            
+            if frame is None and self.current_camera.current_frame is not None:
+                frame = self.current_camera.current_frame.copy()
+            
+            if frame is not None:
+                results = self._detect_marker(frame, marker_type, aruco_dict)
+                if results:
+                    # 按ID分组存储
+                    frame_dets = {}
+                    for det in results:
+                        det_id = det.get('id', 0)
+                        if det_id not in frame_dets:
+                            frame_dets[det_id] = []
+                        frame_dets[det_id].append(det)
+                    all_detections.append(frame_dets)
+            
+            # 等待下一帧（除了最后一帧）
+            if i < num_frames - 1:
+                time.sleep(interval_ms / 1000.0)
+        
+        if not all_detections:
+            return []
+        
+        # 计算每个ID的平均检测结果
+        avg_results = []
+        
+        # 找出所有检测到的ID
+        all_ids = set()
+        for frame_dets in all_detections:
+            all_ids.update(frame_dets.keys())
+        
+        for tag_id in all_ids:
+            # 收集该ID在所有帧中的检测
+            id_dets = []
+            for frame_dets in all_detections:
+                if tag_id in frame_dets:
+                    id_dets.extend(frame_dets[tag_id])
+            
+            if not id_dets:
+                continue
+            
+            # 计算平均值
+            avg_tvec = np.mean([np.array(d['tvec']) for d in id_dets], axis=0)
+            avg_rvec = np.mean([np.array(d['rvec']) for d in id_dets], axis=0)
+            avg_euler = np.mean([np.array(d['euler']) for d in id_dets], axis=0)
+            
+            # 计算平均中心点
+            centers = [d.get('center') for d in id_dets if d.get('center') is not None]
+            avg_center = np.mean(centers, axis=0) if centers else None
+            
+            # 计算平均距离
+            distances = [d.get('distance', 0) for d in id_dets]
+            avg_distance = np.mean(distances) if distances else 0
+            
+            # 取第一个检测的marker_type和corners（这些不需要平均）
+            marker_type_result = id_dets[0].get('marker_type', 'apriltag')
+            corners = id_dets[0].get('corners', None)
+            
+            avg_results.append({
+                'id': tag_id,
+                'tvec': avg_tvec,
+                'rvec': avg_rvec,
+                'euler': avg_euler,
+                'center': avg_center,
+                'distance': avg_distance,
+                'marker_type': marker_type_result,
+                'corners': corners,
+                'averaged_frames': len(id_dets)  # 记录平均了多少帧
+            })
+        
+        if avg_results:
+            info(f"多帧检测: {num_frames}帧，检测到{len(avg_results)}个标记", "CAMERA_UI")
+        
+        return avg_results
+
+    def _normalize_angle(self, angle_deg: float) -> float:
+        """
+        将角度归一化到 [-180, 180] 范围内
+        
+        这用于处理角度环绕问题，例如：
+        - 359.7° 实际应为 -0.3°
+        - -359.7° 实际应为 0.3°
+        
+        Args:
+            angle_deg: 输入角度 (度)
+        Returns:
+            归一化后的角度 [-180, 180]
+        """
+        while angle_deg > 180:
+            angle_deg -= 360
+        while angle_deg < -180:
+            angle_deg += 360
+        return angle_deg
 
     def on_record_standard_point(self):
         """记录标准拍照点"""
@@ -1929,7 +2276,7 @@ class CameraControlTab(QWidget):
             QMessageBox.warning(self, "失败", f"未找到ID为 {target_id} 的Tag")
             return
             
-        # 2. 计算偏差 (Cam系)
+        # 2. 计算偏差 (Cam系) - 完整6DOF
         # 这里的偏差是指：物体相对于标准位置移动了多少
         # Tag在Cam系下坐标：T_c_t
         # std: T_c_t_std
@@ -1939,19 +2286,21 @@ class CameraControlTab(QWidget):
         tvec_std = self.std_tag_pose['tvec']
         tvec_cur = curr_res['tvec']
         
-        # 单位: 米 -> 转毫米
+        # 单位: 米 -> 转毫米 (完整XYZ)
         dx_mm = (tvec_cur[0] - tvec_std[0]) * 1000.0 
         dy_mm = (tvec_cur[1] - tvec_std[1]) * 1000.0
+        dz_mm = (tvec_cur[2] - tvec_std[2]) * 1000.0  # Z方向偏差
         
-        # 角度偏差 (Yaw)
-        # euler是 (roll, pitch, yaw) 还是其他？detector.py中是 ZYX顺序 -> x, y, z
-        # euler[2] 是 z轴旋转 (yaw)
-        yaw_std = self.std_tag_pose['euler'][2]
-        yaw_cur = curr_res['euler'][2]
-        dtheta_deg = yaw_cur - yaw_std
+        # 角度偏差 (完整RX/RY/RZ)
+        # euler 顺序是 [rx, ry, rz] (XYZ欧拉角)
+        euler_std = self.std_tag_pose['euler']
+        euler_cur = curr_res['euler']
+        drx_deg = self._normalize_angle(euler_cur[0] - euler_std[0])
+        dry_deg = self._normalize_angle(euler_cur[1] - euler_std[1])
+        drz_deg = self._normalize_angle(euler_cur[2] - euler_std[2])
         
-        # 打印偏差
-        info(f"视觉偏差计算: dx={dx_mm:.2f}mm, dy={dy_mm:.2f}mm, dr={dtheta_deg:.2f}deg", "CAMERA_UI")
+        # 打印偏差 (完整6DOF)
+        info(f"视觉偏差计算 (6DOF): dx={dx_mm:.2f}mm, dy={dy_mm:.2f}mm, dz={dz_mm:.2f}mm, drx={drx_deg:.2f}°, dry={dry_deg:.2f}°, drz={drz_deg:.2f}°", "CAMERA_UI")
         
         # 3. 计算机械臂新位姿
         if not self.robot_service:
@@ -1977,7 +2326,7 @@ class CameraControlTab(QWidget):
             # 视觉伺服通常是：我们要消除偏差。
             # 偏差 = Cur - Std. 
             # 如果物体X变大(右移)，我们也希望相机X变大(右移)去重新对准它。
-            # 所以 deviation = (dx, dy, dr) 正确。
+            # 6DOF偏差: [dx, dy, dz, drx, dry, drz] - 支持完整空间纠偏
             
             # robot_pose单位确认：roboarm通常使用 rad。is_degree参数需要确认
             # manual_correction_tool默认接受度数/弧度混合？
@@ -1988,13 +2337,14 @@ class CameraControlTab(QWidget):
             
             new_pose = calculate_correction(
                 current_robot_pose, 
-                [dx_mm, dy_mm, dtheta_deg], 
+                [dx_mm, dy_mm, dz_mm, drx_deg, dry_deg, drz_deg],  # 完整6DOF偏差
                 T_hand_eye, 
                 is_degree=True
             )
             
             confirm_msg = (f"计算完成。\n"
-                           f"偏差: dx={dx_mm:.1f}, dy={dy_mm:.1f}, dr={dtheta_deg:.1f}\n"
+                           f"偏差: dx={dx_mm:.1f}, dy={dy_mm:.1f}, dz={dz_mm:.1f}\n"
+                           f"      drx={drx_deg:.2f}°, dry={dry_deg:.2f}°, drz={drz_deg:.2f}°\n"
                            f"当前位姿: {np.round(current_robot_pose, 3)}\n"
                            f"目标位姿: {np.round(new_pose, 3)}\n\n"
                            f"是否移动机械臂？")
@@ -2135,7 +2485,10 @@ class CameraControlTab(QWidget):
             return
 
         self._servo_std_recorded = True
-        self.save_snapshot(prefix="servo_std_")
+        
+        # 保存标准点照片到配方目录
+        recipe_name = self._servo_recipe.name if self._servo_recipe else "unknown"
+        snap = self._save_recipe_standard_photo(recipe_name)
 
         self._set_teach_buttons(start=False, record_std=False, add_point=True, finish=True)
         self._set_servo_status(
@@ -2170,10 +2523,40 @@ class CameraControlTab(QWidget):
         if not ok or not name.strip():
             return
 
-        # 拍照留底
-        snap = self.save_snapshot(prefix=f"servo_pt{n}_")
+        # 保存示教照片到配方的teaching目录（使用数字编号避免中文）
+        recipe_name = self._servo_recipe.name if self._servo_recipe else "unknown"
+        snap = self._save_recipe_teaching_photo(recipe_name, name.strip(), point_index=n)
 
-        count = self._servo_controller.add_photo_point(name.strip(), robot_pose, snap)
+        # 检测当前帧中的标记 (使用多帧平均降低噪声)，保存示教阶段的tag_data
+        tag_data = None
+        if self.current_camera:
+            try:
+                # 使用多帧平均检测 (5帧，间隔100ms) - 大幅降低位姿估计噪声
+                self._set_servo_status(f"正在采集多帧数据...", "#FF9800")
+                QApplication.processEvents()  # 更新UI
+                
+                results = self._detect_marker_averaged(num_frames=5, interval_ms=100, marker_type="auto")
+                if results:
+                    # 取第一个检测到的标签
+                    det = results[0]
+                    marker_type = det.get('marker_type', 'apriltag')
+                    avg_frames = det.get('averaged_frames', 1)
+                    tag_data = {
+                        'id': int(det['id']),
+                        'tvec': det['tvec'].tolist() if hasattr(det['tvec'], 'tolist') else list(det['tvec']),
+                        'rvec': det['rvec'].tolist() if hasattr(det['rvec'], 'tolist') else list(det['rvec']),
+                        'euler': [float(x) for x in det['euler']],
+                        'center': [float(x) for x in det.get('center', [0, 0])] if det.get('center') is not None else [0.0, 0.0],
+                        'distance': float(det.get('distance', 0)),
+                        'marker_type': str(marker_type)
+                    }
+                    info(f"  示教点 [{name}] 标记检测 ({marker_type}, {avg_frames}帧平均): ID={det['id']}, X={det['tvec'][0]:.3f}m, Y={det['tvec'][1]:.3f}m, Z={det['tvec'][2]:.3f}m", "CAMERA_UI")
+                else:
+                    info(f"  示教点 [{name}] 未检测到AprilTag/ArUco标记（可能不在视野内）", "CAMERA_UI")
+            except Exception as e:
+                warning(f"示教点标记检测失败: {e}", "CAMERA_UI")
+
+        count = self._servo_controller.add_photo_point(name.strip(), robot_pose, snap, tag_data)
 
         self._set_servo_status(f"已添加 {count} 个拍照点位。继续添加或点击「完成示教」。", "#9C27B0")
         # 详细日志：拍照点位姿
@@ -2312,11 +2695,7 @@ class CameraControlTab(QWidget):
             QMessageBox.critical(self, "计算错误", f"偏差传播失败: {e}")
             return
 
-        # 保存计算结果到临时属性供执行使用
-        self._servo_new_poses = new_poses
-        self._servo_recipe = recipe
-
-        # 构建偏差摘要
+        # 计算偏差数据（必须先计算才能保存）
         std_T_old = np.array(recipe.T_base_tag_std)
         from multi_point_servo import compute_T_base_tag
         from scipy.spatial.transform import Rotation as R
@@ -2334,7 +2713,25 @@ class CameraControlTab(QWidget):
             delta_euler = R.from_matrix(R_delta).as_euler('xyz', degrees=True)
         except:
             delta_euler = [0, 0, 0]
+
+        # 保存计算结果到临时属性供执行使用
+        self._servo_new_poses = new_poses
+        self._servo_recipe = recipe
         
+        # 保存偏差数据供生产拍照时使用 (完整6维度)
+        self._servo_tag_deviation = {
+            'tag_delta': [delta_t[0], delta_t[1], delta_t[2]],       # Tag位置偏差 XYZ (mm)
+            'tag_rot_delta': list(delta_euler),                       # Tag旋转偏差 RX,RY,RZ (deg)
+        }
+        
+        # 保存生产阶段标准点照片 (保存到 production/standard/)
+        self._save_recipe_standard_photo(recipe.name, is_production=True)
+        
+        # 构建原始示教位姿的映射 (用于偏差报告)
+        self._servo_teaching_poses = {}
+        for pp in recipe.photo_points:
+            self._servo_teaching_poses[pp.name] = list(pp.pose)
+
         # 详细日志
         info(f"========== 偏差计算结果 ==========", "CAMERA_UI")
         info(f"  当前机械臂位姿 (标准位置):", "CAMERA_UI")
@@ -2506,13 +2903,140 @@ class CameraControlTab(QWidget):
         if idx < len(self._servo_exec_poses):
             name = self._servo_exec_poses[idx][0]
             pose = self._servo_exec_poses[idx][1]
-            snap = self.save_snapshot(prefix=f"prod_{name}_")
+            
+            # 使用配方目录结构保存生产照片（使用数字编号避免中文）
+            recipe_name = self._servo_recipe.name if self._servo_recipe else "unknown"
+            snap = self._save_recipe_production_photo(recipe_name, name, point_index=idx+1)
+            
+            # 获取示教位姿以计算纠偏后偏差
+            teaching_pose = self._servo_teaching_poses.get(name, [0]*6) if hasattr(self, '_servo_teaching_poses') else [0]*6
+            
+            # 获取纠偏前偏差 (标准点Tag偏差 - 在检测标准点时计算) - 完整6维
+            tag_deviation = getattr(self, '_servo_tag_deviation', {})
+            tag_delta = tag_deviation.get('tag_delta', [0, 0, 0])
+            tag_rot_delta = tag_deviation.get('tag_rot_delta', [0, 0, 0])
+            pre_delta_x = tag_delta[0]   # 纠偏前X偏差
+            pre_delta_y = tag_delta[1]   # 纠偏前Y偏差
+            pre_delta_z = tag_delta[2]   # 纠偏前Z偏差
+            pre_delta_rx = tag_rot_delta[0]  # 纠偏前RX偏差
+            pre_delta_ry = tag_rot_delta[1]  # 纠偏前RY偏差
+            pre_delta_rz = tag_rot_delta[2]  # 纠偏前RZ偏差
+            
+            # 检测当前帧标记，计算纠偏后偏差 (与示教点的tag_data比较) - 完整6维
+            post_delta_x, post_delta_y, post_delta_z = 0.0, 0.0, 0.0
+            post_delta_rx, post_delta_ry, post_delta_rz = 0.0, 0.0, 0.0
+            current_tag_data = None
+            teaching_tag_data = None
+            
+            # 从配方中获取此点位的示教tag_data
+            if self._servo_recipe:
+                for pp in self._servo_recipe.photo_points:
+                    if pp.name == name and pp.tag_data:
+                        teaching_tag_data = pp.tag_data
+                        break
+            
+            # 检测当前帧中的标记 (使用多帧平均降低噪声)
+            if self.current_camera:
+                try:
+                    # 使用多帧平均检测 (5帧，间隔100ms) - 与示教阶段保持一致
+                    results = self._detect_marker_averaged(num_frames=5, interval_ms=100, marker_type="auto")
+                    if results:
+                        det = results[0]
+                        avg_frames = det.get('averaged_frames', 1)
+                        current_tag_data = {
+                            'tvec': det['tvec'].tolist() if hasattr(det['tvec'], 'tolist') else list(det['tvec']),
+                            'euler': [float(x) for x in det['euler']],
+                            'marker_type': det.get('marker_type', 'apriltag'),
+                            'id': det.get('id', 0),
+                            'center': [float(x) for x in det.get('center', [0, 0])] if det.get('center') is not None else None,
+                            'corners': det.get('corners', None),
+                            'averaged_frames': avg_frames
+                        }
+                        
+                        marker_info = f"{current_tag_data['marker_type']} ID={current_tag_data['id']} ({avg_frames}帧平均)"
+                        
+                        # 如果有示教点的tag_data，计算纠偏后偏差 (完整6维)
+                        if teaching_tag_data:
+                            teach_tvec = teaching_tag_data.get('tvec', [0, 0, 0])
+                            teach_euler = teaching_tag_data.get('euler', [0, 0, 0])
+                            curr_tvec = current_tag_data['tvec']
+                            curr_euler = current_tag_data['euler']
+                            
+                            # 纠偏后偏差 = 生产Tag位置 - 示教Tag位置
+                            # 位置偏差 (单位: mm)
+                            post_delta_x = (curr_tvec[0] - teach_tvec[0]) * 1000  # m -> mm
+                            post_delta_y = (curr_tvec[1] - teach_tvec[1]) * 1000
+                            post_delta_z = (curr_tvec[2] - teach_tvec[2]) * 1000
+                            # 旋转偏差 (单位: deg) - 带角度归一化
+                            post_delta_rx = self._normalize_angle(curr_euler[0] - teach_euler[0])
+                            post_delta_ry = self._normalize_angle(curr_euler[1] - teach_euler[1])
+                            post_delta_rz = self._normalize_angle(curr_euler[2] - teach_euler[2])
+                            
+                            info(f"  标记检测成功 ({marker_info}): 生产 vs 示教", "CAMERA_UI")
+                        else:
+                            info(f"  标记检测成功 ({marker_info})，但无示教tag_data用于比较", "CAMERA_UI")
+                    else:
+                        info(f"  生产点未检测到AprilTag/ArUco标记", "CAMERA_UI")
+                except Exception as e:
+                    warning(f"生产点标记检测失败: {e}", "CAMERA_UI")
+            
+            # 计算纠偏评估比值 (纠偏后/纠偏前) - 完整6维
+            def calc_ratio(post, pre):
+                return abs(post / pre) if abs(pre) > 0.001 else 0.0
+            
+            ratio_x = calc_ratio(post_delta_x, pre_delta_x)
+            ratio_y = calc_ratio(post_delta_y, pre_delta_y)
+            ratio_z = calc_ratio(post_delta_z, pre_delta_z)
+            ratio_rx = calc_ratio(post_delta_rx, pre_delta_rx)
+            ratio_ry = calc_ratio(post_delta_ry, pre_delta_ry)
+            ratio_rz = calc_ratio(post_delta_rz, pre_delta_rz)
+            
+            # 详细日志 (完整6维)
             info(f"========== 生产拍照 [{name}] ==========", "CAMERA_UI")
-            info(f"  实际位姿:", "CAMERA_UI")
+            info(f"  示教位姿:", "CAMERA_UI")
+            info(f"    X={teaching_pose[0]:.3f} Y={teaching_pose[1]:.3f} Z={teaching_pose[2]:.3f} mm", "CAMERA_UI")
+            info(f"    RX={teaching_pose[3]:.3f} RY={teaching_pose[4]:.3f} RZ={teaching_pose[5]:.3f} deg", "CAMERA_UI")
+            info(f"  生产位姿 (纠偏后):", "CAMERA_UI")
             info(f"    X={pose[0]:.3f} Y={pose[1]:.3f} Z={pose[2]:.3f} mm", "CAMERA_UI")
             info(f"    RX={pose[3]:.3f} RY={pose[4]:.3f} RZ={pose[5]:.3f} deg", "CAMERA_UI")
+            info(f"  -------- 偏差数据 (6维) --------", "CAMERA_UI")
+            info(f"  纠偏前偏差 (标准点Tag):", "CAMERA_UI")
+            info(f"    dX={pre_delta_x:.3f}mm  dY={pre_delta_y:.3f}mm  dZ={pre_delta_z:.3f}mm", "CAMERA_UI")
+            info(f"    dRX={pre_delta_rx:.3f}°  dRY={pre_delta_ry:.3f}°  dRZ={pre_delta_rz:.3f}°", "CAMERA_UI")
+            info(f"  纠偏后偏差 (此点Tag vs 示教):", "CAMERA_UI")
+            info(f"    dX={post_delta_x:.3f}mm  dY={post_delta_y:.3f}mm  dZ={post_delta_z:.3f}mm", "CAMERA_UI")
+            info(f"    dRX={post_delta_rx:.3f}°  dRY={post_delta_ry:.3f}°  dRZ={post_delta_rz:.3f}°", "CAMERA_UI")
+            info(f"  -------- 纠偏评估 (后/前) --------", "CAMERA_UI")
+            info(f"    X: {ratio_x:.2%}  Y: {ratio_y:.2%}  Z: {ratio_z:.2%}", "CAMERA_UI")
+            info(f"    RX: {ratio_rx:.2%}  RY: {ratio_ry:.2%}  RZ: {ratio_rz:.2%}", "CAMERA_UI")
             info(f"  照片保存: {snap}", "CAMERA_UI")
             info(f"=========================================", "CAMERA_UI")
+            
+            # 追加偏差报告到文件 (完整6维) - 使用Tag相机坐标系数据
+            deviation_info = {
+                'pre_delta_x': pre_delta_x,
+                'pre_delta_y': pre_delta_y,
+                'pre_delta_z': pre_delta_z,
+                'pre_delta_rx': pre_delta_rx,
+                'pre_delta_ry': pre_delta_ry,
+                'pre_delta_rz': pre_delta_rz,
+                'post_delta_x': post_delta_x,
+                'post_delta_y': post_delta_y,
+                'post_delta_z': post_delta_z,
+                'post_delta_rx': post_delta_rx,
+                'post_delta_ry': post_delta_ry,
+                'post_delta_rz': post_delta_rz,
+                'ratio_x': ratio_x,
+                'ratio_y': ratio_y,
+                'ratio_z': ratio_z,
+                'ratio_rx': ratio_rx,
+                'ratio_ry': ratio_ry,
+                'ratio_rz': ratio_rz,
+                # Tag原始数据 (相机坐标系)
+                'teaching_tag': teaching_tag_data,
+                'current_tag': current_tag_data,
+            }
+            self._append_deviation_report(recipe_name, name, teaching_pose, pose, deviation_info)
 
         # 继续下一个
         self._servo_exec_timer.start(500)
@@ -2526,8 +3050,14 @@ class CameraControlTab(QWidget):
         # except Exception as e:
         #     warning(f"更新帧数显示失败: {e}", "CAMERA_UI")
 
-    def save_snapshot(self, prefix="snapshot_"):
-        """保存当前画面快照"""
+    def save_snapshot(self, prefix="snapshot_", save_dir=None, filepath_override=None):
+        """保存当前画面快照
+        
+        Args:
+            prefix: 文件名前缀
+            save_dir: 指定保存目录（可选，默认使用配置的captures目录）
+            filepath_override: 直接指定完整文件路径（可选，优先于prefix和save_dir）
+        """
         # 检查相机是否可用
         if not self.current_camera:
             warning("无法保存快照：无相机", "CAMERA_UI")
@@ -2557,19 +3087,26 @@ class CameraControlTab(QWidget):
             import cv2
             import time
             
-            # 使用配置中的媒体保存路径
-            from core.managers.app_config import AppConfigManager
-            config_manager = AppConfigManager()
-            save_dir = os.path.join(config_manager.paths_dir, "captures")
-            
-            os.makedirs(save_dir, exist_ok=True)
-            
-            # 文件名中去除空格，避免文件系统问题
-            safe_prefix = prefix.replace(" ", "_").replace("　", "_")
-            
-            timestamp = time.strftime("%Y%m%d_%H%M%S")
-            filename = f"{safe_prefix}{timestamp}.jpg"
-            filepath = os.path.join(save_dir, filename)
+            # 如果直接指定了完整文件路径
+            if filepath_override:
+                filepath = filepath_override
+                # 确保目录存在
+                os.makedirs(os.path.dirname(filepath), exist_ok=True)
+            else:
+                # 如果指定了保存目录，使用指定目录；否则使用默认目录
+                if save_dir is None:
+                    from core.managers.app_config import AppConfigManager
+                    config_manager = AppConfigManager()
+                    save_dir = os.path.join(config_manager.paths_dir, "captures")
+                
+                os.makedirs(save_dir, exist_ok=True)
+                
+                # 文件名中去除空格，避免文件系统问题
+                safe_prefix = prefix.replace(" ", "_").replace("　", "_")
+                
+                timestamp = time.strftime("%Y%m%d_%H%M%S")
+                filename = f"{safe_prefix}{timestamp}.jpg"
+                filepath = os.path.join(save_dir, filename)
             
             # 颜色转换 RGB -> BGR (OpenCV使用BGR)
             # 假设 current_frame 是 RGB
@@ -2581,6 +3118,288 @@ class CameraControlTab(QWidget):
         except Exception as e:
             error(f"保存快照失败: {e}", "CAMERA_UI")
             return None
+
+    def _get_recipe_capture_dirs(self, recipe_name: str):
+        """获取配方的照片存储目录结构
+        
+        返回目录结构:
+        workspace/paths/captures/{recipe_name}/
+            ├── standard.jpg           # 标准点位照片
+            ├── teaching/              # 示教照片目录
+            │   ├── point1.jpg
+            │   └── point2.jpg
+            ├── production/            # 生产照片目录
+            │   ├── point1/            # 点位1的生产照片
+            │   │   └── {timestamp}.jpg
+            │   └── point2/            # 点位2的生产照片
+            │       └── {timestamp}.jpg
+            └── deviation_report.txt   # 偏差报告
+        
+        Returns:
+            dict: {
+                'base': 配方根目录,
+                'standard': 标准点照片路径,
+                'teaching': 示教照片目录,
+                'production': 生产照片目录,
+                'report': 偏差报告文件路径
+            }
+        """
+        from core.managers.app_config import AppConfigManager
+        config_manager = AppConfigManager()
+        
+        # 规范化配方名（去除非法字符）
+        safe_name = recipe_name.replace(" ", "_").replace("/", "_").replace("\\", "_")
+        safe_name = safe_name.replace(":", "_").replace("*", "_").replace("?", "_")
+        safe_name = safe_name.replace("\"", "_").replace("<", "_").replace(">", "_")
+        safe_name = safe_name.replace("|", "_")
+        
+        base_dir = os.path.join(config_manager.paths_dir, "captures", safe_name)
+        teaching_dir = os.path.join(base_dir, "teaching")
+        production_dir = os.path.join(base_dir, "production")
+        
+        # 创建目录
+        os.makedirs(base_dir, exist_ok=True)
+        os.makedirs(teaching_dir, exist_ok=True)
+        os.makedirs(production_dir, exist_ok=True)
+        
+        return {
+            'base': base_dir,
+            'teaching': teaching_dir,
+            'production': production_dir,
+            'report': os.path.join(base_dir, "deviation_report.txt")
+        }
+    
+    def _save_recipe_standard_photo(self, recipe_name: str, is_production: bool = False):
+        """保存配方的标准点照片
+        
+        Args:
+            recipe_name: 配方名称
+            is_production: 是否为生产阶段（否则为示教阶段）
+        """
+        dirs = self._get_recipe_capture_dirs(recipe_name)
+        if is_production:
+            # 生产阶段：保存到 production/standard/
+            std_dir = os.path.join(dirs['production'], 'standard')
+            os.makedirs(std_dir, exist_ok=True)
+            return self.save_snapshot(prefix="prod_std_", save_dir=std_dir)
+        else:
+            # 示教阶段：保存到 teaching/standard.jpg
+            filepath = os.path.join(dirs['teaching'], 'standard.jpg')
+            return self.save_snapshot(prefix="", save_dir=None, filepath_override=filepath)
+
+    def _save_recipe_teaching_photo(self, recipe_name: str, point_name: str, point_index: int = None):
+        """保存配方的示教点照片"""
+        dirs = self._get_recipe_capture_dirs(recipe_name)
+        # 使用英文编号命名，避免中文
+        if point_index is not None:
+            safe_name = f"point_{point_index}"
+        else:
+            safe_name = point_name.replace(" ", "_").replace("拍照点", "point_")
+        return self.save_snapshot(prefix=f"teaching_{safe_name}_", save_dir=dirs['teaching'])
+
+    def _save_recipe_production_photo(self, recipe_name: str, point_name: str, point_index: int = None):
+        """保存配方的生产点照片"""
+        dirs = self._get_recipe_capture_dirs(recipe_name)
+        # 使用英文编号命名，避免中文
+        if point_index is not None:
+            safe_name = f"point_{point_index}"
+        else:
+            safe_name = point_name.replace(" ", "_").replace("拍照点", "point_").replace("标准点", "standard")
+        
+        # 生产照片按点位分目录
+        point_dir = os.path.join(dirs['production'], safe_name)
+        os.makedirs(point_dir, exist_ok=True)
+        
+        return self.save_snapshot(prefix="prod_", save_dir=point_dir)
+
+    def _append_deviation_report(self, recipe_name: str, point_name: str, 
+                                  teaching_pose, production_pose, deviation_info: dict):
+        """追加偏差报告到文件 - 使用Tag相机坐标系数据"""
+        import time
+        dirs = self._get_recipe_capture_dirs(recipe_name)
+        report_path = dirs['report']
+        
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        
+        # 提取Tag数据
+        teaching_tag = deviation_info.get('teaching_tag', {}) or {}
+        current_tag = deviation_info.get('current_tag', {}) or {}
+        
+        with open(report_path, 'a', encoding='utf-8') as f:
+            f.write(f"\n{'='*75}\n")
+            f.write(f"时间: {timestamp}\n")
+            f.write(f"点位: {point_name}\n")
+            f.write(f"-" * 60 + "\n")
+            
+            # ========== Tag位姿数据 (相机坐标系) ==========
+            f.write(f"【Tag位姿数据 - 相机坐标系】\n")
+            
+            # 示教时的Tag数据
+            if teaching_tag:
+                teach_tvec = teaching_tag.get('tvec', [0, 0, 0])
+                teach_euler = teaching_tag.get('euler', [0, 0, 0])
+                teach_center = teaching_tag.get('center', None)
+                f.write(f"  示教Tag (ID={teaching_tag.get('id', '?')}):\n")
+                f.write(f"    位置: X={teach_tvec[0]*1000:.2f}mm  Y={teach_tvec[1]*1000:.2f}mm  Z={teach_tvec[2]*1000:.2f}mm\n")
+                f.write(f"    姿态: RX={teach_euler[0]:.2f}°  RY={teach_euler[1]:.2f}°  RZ={teach_euler[2]:.2f}°\n")
+                if teach_center:
+                    f.write(f"    像素中心: ({teach_center[0]:.1f}, {teach_center[1]:.1f}) px\n")
+            else:
+                f.write(f"  示教Tag: 无数据\n")
+            
+            # 生产时的Tag数据
+            if current_tag:
+                curr_tvec = current_tag.get('tvec', [0, 0, 0])
+                curr_euler = current_tag.get('euler', [0, 0, 0])
+                curr_center = current_tag.get('center', None)
+                marker_type = current_tag.get('marker_type', 'unknown')
+                f.write(f"  生产Tag (ID={current_tag.get('id', '?')}, {marker_type}):\n")
+                f.write(f"    位置: X={curr_tvec[0]*1000:.2f}mm  Y={curr_tvec[1]*1000:.2f}mm  Z={curr_tvec[2]*1000:.2f}mm\n")
+                f.write(f"    姿态: RX={curr_euler[0]:.2f}°  RY={curr_euler[1]:.2f}°  RZ={curr_euler[2]:.2f}°\n")
+                if curr_center:
+                    f.write(f"    像素中心: ({curr_center[0]:.1f}, {curr_center[1]:.1f}) px\n")
+                
+                # 计算像素偏差
+                if teaching_tag and teaching_tag.get('center') and curr_center:
+                    teach_center = teaching_tag.get('center')
+                    px_dx = curr_center[0] - teach_center[0]
+                    px_dy = curr_center[1] - teach_center[1]
+                    f.write(f"    像素偏差: dX={px_dx:.1f}px  dY={px_dy:.1f}px\n")
+            else:
+                f.write(f"  生产Tag: 未检测到\n")
+            
+            f.write(f"-" * 60 + "\n")
+            
+            # ========== 纠偏偏差分析 ==========
+            f.write(f"【纠偏偏差分析 - 相机坐标系下Tag位姿差】\n")
+            
+            # 纠偏前偏差 (标准点)
+            f.write(f"  纠偏前偏差 (标准点Tag检测):\n")
+            f.write(f"    位置: dX={deviation_info.get('pre_delta_x', 0):.3f}mm  ")
+            f.write(f"dY={deviation_info.get('pre_delta_y', 0):.3f}mm  ")
+            f.write(f"dZ={deviation_info.get('pre_delta_z', 0):.3f}mm\n")
+            f.write(f"    姿态: dRX={deviation_info.get('pre_delta_rx', 0):.3f}°  ")
+            f.write(f"dRY={deviation_info.get('pre_delta_ry', 0):.3f}°  ")
+            f.write(f"dRZ={deviation_info.get('pre_delta_rz', 0):.3f}°\n")
+            
+            # 纠偏后偏差 (当前点)
+            f.write(f"  纠偏后偏差 (生产Tag vs 示教Tag):\n")
+            f.write(f"    位置: dX={deviation_info.get('post_delta_x', 0):.3f}mm  ")
+            f.write(f"dY={deviation_info.get('post_delta_y', 0):.3f}mm  ")
+            f.write(f"dZ={deviation_info.get('post_delta_z', 0):.3f}mm\n")
+            f.write(f"    姿态: dRX={deviation_info.get('post_delta_rx', 0):.3f}°  ")
+            f.write(f"dRY={deviation_info.get('post_delta_ry', 0):.3f}°  ")
+            f.write(f"dRZ={deviation_info.get('post_delta_rz', 0):.3f}°\n")
+            
+            f.write(f"-" * 60 + "\n")
+            
+            # ========== 纠偏效果评估（改进版） ==========
+            # 获取数据
+            post_x = abs(deviation_info.get('post_delta_x', 0))
+            post_y = abs(deviation_info.get('post_delta_y', 0))
+            post_z = abs(deviation_info.get('post_delta_z', 0))
+            post_rx = abs(deviation_info.get('post_delta_rx', 0))
+            post_ry = abs(deviation_info.get('post_delta_ry', 0))
+            post_rz = abs(deviation_info.get('post_delta_rz', 0))
+            
+            pre_x = abs(deviation_info.get('pre_delta_x', 0))
+            pre_y = abs(deviation_info.get('pre_delta_y', 0))
+            pre_z = abs(deviation_info.get('pre_delta_z', 0))
+            pre_rx = abs(deviation_info.get('pre_delta_rx', 0))
+            pre_ry = abs(deviation_info.get('pre_delta_ry', 0))
+            pre_rz = abs(deviation_info.get('pre_delta_rz', 0))
+            
+            # 基于绝对误差的评级函数
+            def grade_position_abs(err_mm):
+                """位置误差评级 (mm)"""
+                if err_mm < 0.5:
+                    return "优秀 ★★★", 1.0
+                elif err_mm < 1.0:
+                    return "良好 ★★☆", 0.8
+                elif err_mm < 2.0:
+                    return "一般 ★☆☆", 0.5
+                else:
+                    return "需改进 ☆☆☆", 0.2
+            
+            def grade_angle_abs(err_deg):
+                """姿态误差评级 (deg)"""
+                if err_deg < 0.3:
+                    return "优秀 ★★★", 1.0
+                elif err_deg < 0.5:
+                    return "良好 ★★☆", 0.8
+                elif err_deg < 1.0:
+                    return "一般 ★☆☆", 0.5
+                else:
+                    return "需改进 ☆☆☆", 0.2
+            
+            # 比例改善评估（仅当原始偏差足够大时有意义）
+            def calc_improvement(post, pre, threshold):
+                """计算改善比例，原始偏差小于阈值时返回 N/A"""
+                if pre < threshold:
+                    return "N/A(原始已很小)"
+                ratio = post / pre
+                if ratio < 0.1:
+                    return f"{ratio:.0%} ↓↓↓"
+                elif ratio < 0.3:
+                    return f"{ratio:.0%} ↓↓"
+                elif ratio < 0.5:
+                    return f"{ratio:.0%} ↓"
+                elif ratio < 1.0:
+                    return f"{ratio:.0%}"
+                else:
+                    return f"{ratio:.0%} ↑"
+            
+            f.write(f"【纠偏效果评估】\n")
+            f.write(f"  ┌─────────────────────────────────────────────────────────┐\n")
+            f.write(f"  │ 指标     │ 纠偏后绝对误差    │ 评级     │ 改善比      │\n")
+            f.write(f"  ├─────────────────────────────────────────────────────────┤\n")
+            
+            # 位置评估
+            gx, _ = grade_position_abs(post_x)
+            gy, _ = grade_position_abs(post_y)
+            gz, _ = grade_position_abs(post_z)
+            f.write(f"  │ 位置 X   │ {post_x:>8.3f}mm      │ {gx:<8} │ {calc_improvement(post_x, pre_x, 1.0):<11} │\n")
+            f.write(f"  │ 位置 Y   │ {post_y:>8.3f}mm      │ {gy:<8} │ {calc_improvement(post_y, pre_y, 1.0):<11} │\n")
+            f.write(f"  │ 位置 Z   │ {post_z:>8.3f}mm      │ {gz:<8} │ {calc_improvement(post_z, pre_z, 1.0):<11} │\n")
+            
+            # 姿态评估
+            grx, _ = grade_angle_abs(post_rx)
+            gry, _ = grade_angle_abs(post_ry)
+            grz, _ = grade_angle_abs(post_rz)
+            f.write(f"  │ 姿态 RX  │ {post_rx:>8.3f}°       │ {grx:<8} │ {calc_improvement(post_rx, pre_rx, 0.5):<11} │\n")
+            f.write(f"  │ 姿态 RY  │ {post_ry:>8.3f}°       │ {gry:<8} │ {calc_improvement(post_ry, pre_ry, 0.5):<11} │\n")
+            f.write(f"  │ 姿态 RZ  │ {post_rz:>8.3f}°       │ {grz:<8} │ {calc_improvement(post_rz, pre_rz, 0.5):<11} │\n")
+            f.write(f"  └─────────────────────────────────────────────────────────┘\n")
+            
+            # 综合评分 (基于绝对误差)
+            pos_scores = [grade_position_abs(post_x)[1], grade_position_abs(post_y)[1], grade_position_abs(post_z)[1]]
+            rot_scores = [grade_angle_abs(post_rx)[1], grade_angle_abs(post_ry)[1], grade_angle_abs(post_rz)[1]]
+            
+            avg_pos_score = sum(pos_scores) / 3
+            avg_rot_score = sum(rot_scores) / 3
+            
+            def overall_grade(score):
+                if score >= 0.9:
+                    return "优秀 ★★★"
+                elif score >= 0.7:
+                    return "良好 ★★☆"
+                elif score >= 0.4:
+                    return "一般 ★☆☆"
+                else:
+                    return "需改进 ☆☆☆"
+            
+            f.write(f"\n  【综合评估】\n")
+            f.write(f"    位置精度: {overall_grade(avg_pos_score)} (XYZ均方根: {(post_x**2+post_y**2+post_z**2)**0.5:.2f}mm)\n")
+            f.write(f"    姿态精度: {overall_grade(avg_rot_score)} (RxRyRz均方根: {(post_rx**2+post_ry**2+post_rz**2)**0.5:.2f}°)\n")
+            
+            # 参考：机械臂位姿（不再作为主要指标）
+            f.write(f"\n  [参考] 机械臂位姿:\n")
+            f.write(f"    示教: X={teaching_pose[0]:.1f} Y={teaching_pose[1]:.1f} Z={teaching_pose[2]:.1f}mm\n")
+            f.write(f"    生产: X={production_pose[0]:.1f} Y={production_pose[1]:.1f} Z={production_pose[2]:.1f}mm\n")
+            
+            f.write(f"{'='*75}\n")
+        
+        info(f"偏差报告已更新: {report_path}", "CAMERA_UI")
 
     def capture_image(self):
         """拍照"""
